@@ -1,0 +1,10 @@
+[project]
+name = "ges-explorer"
+version = "0.1.0"
+dependencies = [
+    "nerfstudio",
+    "gsplat"
+]
+
+[project.entry-points.'nerfstudio.method_configs']
+ges-method = "src.config:ges_method"

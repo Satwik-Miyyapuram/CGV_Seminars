@@ -1,0 +1,8 @@
+torch
+torchvision
+numpy
+zstandard
+# Authors' original code dependencies (to be verified)
+plyfile
+scipy
+tqdm
