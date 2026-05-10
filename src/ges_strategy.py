@@ -47,13 +47,14 @@ class GESStrategy(DefaultStrategy):
         def optimizer_fn(key:str, v:torch.Tensor)-> torch.Tensor:
             return v[keep_mask]
         surfel_param_dict = model.get_surfel_param_dict()
-        _update_param_with_optimizer(param_fn, optimizer_fn, surfel_param_dict, model.optimizers)
-        model.surfel.means = surfel_param_dict["surfel_means"]
-        model.surfel.quats = surfel_param_dict["surfel_quats"]
-        model.surfel.scales = surfel_param_dict["surfel_scales"]
-        model.surfel.opacities = surfel_param_dict["surfel_opacities"]
-        model.surfel.features_dc = surfel_param_dict["surfel_features_dc"]
-        model.surfel.features_rest = surfel_param_dict["surfel_features_rest"]
+        densification_optimizers = model.get_densification_optimizers(10000)
+        _update_param_with_optimizer(param_fn, optimizer_fn, surfel_param_dict, densification_optimizers)
+        model.surfel.means = surfel_param_dict["means"]
+        model.surfel.quats = surfel_param_dict["quats"]
+        model.surfel.scales = surfel_param_dict["scales"]
+        model.surfel.opacities = surfel_param_dict["opacities"]
+        model.surfel.features_dc = surfel_param_dict["features_dc"]
+        model.surfel.features_rest = surfel_param_dict["features_rest"]
     
     def execute_15k_visibility_prune(self, model):
         """Callback function to be executed at the 15k iteration to prune the points based on visibility."""
@@ -76,12 +77,12 @@ class GESStrategy(DefaultStrategy):
             return v[visibility_mask]
         surfel_param_dict = model.get_surfel_param_dict()
         _update_param_with_optimizer(param_fn, optimizer_fn, surfel_param_dict, model.optimizers)
-        model.surfel.means = surfel_param_dict["surfel_means"]
-        model.surfel.quats = surfel_param_dict["surfel_quats"]
-        model.surfel.scales = surfel_param_dict["surfel_scales"]
-        model.surfel.opacities = surfel_param_dict["surfel_opacities"]
-        model.surfel.features_dc = surfel_param_dict["surfel_features_dc"]
-        model.surfel.features_rest = surfel_param_dict["surfel_features_rest"]
+        model.surfel.means = surfel_param_dict["means"]
+        model.surfel.quats = surfel_param_dict["quats"]
+        model.surfel.scales = surfel_param_dict["scales"]
+        model.surfel.opacities = surfel_param_dict["opacities"]
+        model.surfel.features_dc = surfel_param_dict["features_dc"]
+        model.surfel.features_rest = surfel_param_dict["features_rest"]
         
     def clamp_surfel_opacity(self, model, min_opacity: float):
         """Callback function to be executed when the surfel opacity needs to be clamped."""
@@ -106,12 +107,12 @@ class GESStrategy(DefaultStrategy):
         device = model.device
         
         new_data = {
-            "gaussian_means": saved_gaussian_seeds.clone(),
-            "gaussian_quats": random_quat_tensor(num_new_gaussians).to(device),
-            "gaussian_scales": torch.ones((num_new_gaussians, 3), device=device) * -2.0,  # Initialize scales to a small value (log scale)
-            "gaussian_opacities": torch.logit(0.1 * torch.ones((num_new_gaussians, 1), device=device)),  # Initialize opacities to a low value
-            "gaussian_features_dc": torch.zeros((num_new_gaussians,3), device=device),  # Initialize DC features to zero
-            "gaussian_features_rest": torch.zeros((num_new_gaussians, num_sh_bases(model.config.sh_degree) -1,3), device=device),  # Initialize SH features to zero
+            "means": saved_gaussian_seeds.clone(),
+            "quats": random_quat_tensor(num_new_gaussians).to(device),
+            "scales": torch.ones((num_new_gaussians, 3), device=device) * -2.0,  # Initialize scales to a small value (log scale)
+            "opacities": torch.logit(0.1 * torch.ones((num_new_gaussians, 1), device=device)),  # Initialize opacities to a low value
+            "features_dc": torch.zeros((num_new_gaussians,3), device=device),  # Initialize DC features to zero
+            "features_rest": torch.zeros((num_new_gaussians, num_sh_bases(model.config.sh_degree) -1,3), device=device),  # Initialize SH features to zero
         }
         
         def param_fn(name:str, p: torch.Tensor)-> torch.Tensor:
@@ -122,12 +123,12 @@ class GESStrategy(DefaultStrategy):
         
         gausssian_params_dict = model.get_gaussian_param_dict()
         _update_param_with_optimizer(param_fn, optimizer_fn, gausssian_params_dict, model.optimizers)
-        model.gaussian.means = gausssian_params_dict["gaussian_means"]
-        model.gaussian.quats = gausssian_params_dict["gaussian_quats"]
-        model.gaussian.scales = gausssian_params_dict["gaussian_scales"]
-        model.gaussian.opacities = gausssian_params_dict["gaussian_opacities"]
-        model.gaussian.features_dc = gausssian_params_dict["gaussian_features_dc"]
-        model.gaussian.features_rest = gausssian_params_dict["gaussian_features_rest"]
+        model.gaussian.means = gausssian_params_dict["means"]
+        model.gaussian.quats = gausssian_params_dict["quats"]
+        model.gaussian.scales = gausssian_params_dict["scales"]
+        model.gaussian.opacities = gausssian_params_dict["opacities"]
+        model.gaussian.features_dc = gausssian_params_dict["features_dc"]
+        model.gaussian.features_rest = gausssian_params_dict["features_rest"]
         print(f"Spawned {num_new_gaussians} new gaussians from saved seeds at iteration {model.step}.")
         
         

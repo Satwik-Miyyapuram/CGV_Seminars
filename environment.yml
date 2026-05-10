@@ -8,7 +8,7 @@ dependencies:
   - pip
   - pytorch
   - torchvision
-  - pytorch-cuda=11.8
+  - pytorch-cuda=12.5
   - ninja
   - pip:
       - pytorch-msssim

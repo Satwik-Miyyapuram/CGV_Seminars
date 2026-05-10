@@ -1,3 +1,6 @@
 .vscode/*
 nerf_synthetic/*
 .env/*
+outputs/*
+logs/*
+*/__pycache__/*

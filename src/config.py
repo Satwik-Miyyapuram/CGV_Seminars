@@ -10,6 +10,8 @@ from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataPars
 from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 
+from nerfstudio.configs.base_config import ViewerConfig
+
 from ges_model import GESModelConfig
 base_optimizer_config = {
         "means": AdamOptimizerConfig(lr=1.6e-4, weight_decay=1e-15),
@@ -39,7 +41,7 @@ ges_method = MethodSpecification(
             model=GESModelConfig(),
         ),
         optimizers=ges_optimizers,
-        viewer=None, # Use default viewer config
+        viewer=ViewerConfig(), # Use default viewer config
     ),
     description="Gaussian-Surfel representation built on gsplat",
 )
