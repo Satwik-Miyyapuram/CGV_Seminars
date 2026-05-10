@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Tuple, Union, TYPE_CHECKING
 
 import torch
 from typing_extensions import Literal
@@ -8,7 +8,8 @@ from external_code.gsplat.gsplat.strategy.default import DefaultStrategy
 from external_code.gsplat.gsplat.strategy.ops import _update_param_with_optimizer
 from external_code.nerfstudio.nerfstudio.utils.math import random_quat_tensor
 from external_code.nerfstudio.nerfstudio.utils.spherical_harmonics import num_sh_bases
-from src.ges_model import GESModel
+if TYPE_CHECKING:
+    from ges_model import GESModel
 
 
 @dataclass

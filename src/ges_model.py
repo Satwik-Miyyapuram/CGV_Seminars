@@ -22,7 +22,7 @@ from external_code.nerfstudio.nerfstudio.utils.spherical_harmonics import RGB2SH
 from external_code.nerfstudio.nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
 from external_code.nerfstudio.nerfstudio.data.scene_box import OrientedBox
 from external_code.nerfstudio.nerfstudio.utils.colors import get_color
-from src.ges_strategy import GESStrategy
+from ges_strategy import GESStrategy
 # Assuming gsplat is in external_code/gsplat and accessible
 from external_code.gsplat.gsplat.rendering import rasterization, rasterization_2dgs
 
@@ -111,7 +111,7 @@ class GESModel(Model):
             and self.seed_points[0].shape[1]>0
             ):
             print("Initializing from seed points...")
-            shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().cuda()
+            shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().to(self.device)
             if self.config.sh_degree > 0:
                 shs[:, 0, :3] = RGB2SH(self.seed_points[1]/255)
                 shs[:, 1:, 3:] = 0.0
@@ -423,8 +423,7 @@ class GESModel(Model):
         veiwmat = get_viewmat(optimized_camera_to_world)
         intrinsic_mat = camera.get_intrinsics_matrices()
         
-        if self.device.type == "cuda":
-            intrinsic_mat=intrinsic_mat.cuda()
+        intrinsic_mat=intrinsic_mat.to(self.device)
         height = int(camera.height.item())
         width = int(camera.width.item())
         camera.rescale_output_resolution(camera_scale_fac)
@@ -487,7 +486,7 @@ class GESModel(Model):
                 if self.strategy_state["surfels"]["radii"] is None:
                     self.strategy_state["surfels"]["radii"] = surfel_radii
                 else:
-                    self.strategy_state["surfels"]["radii"] = torch.max(self.strategy_state["surfels"]["radii"], surfel_radii)
+                    self.strategy_state["surfels"]["radii"] = torch.maximum(self.strategy_state["surfels"]["radii"], surfel_radii)
                 
                 
             
@@ -518,7 +517,7 @@ class GESModel(Model):
         C_G = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
         
-        rgb =(W_S *C_S + C_G) / (W_S + W_G + 1e-5)
+        rgb =(C_S + C_G) / (W_S + W_G + 1e-5)
         
         final_alpha = torch.clamp(W_S + W_G, 0.0,1.0)
         rgb = rgb + (1 - final_alpha) * background_color
