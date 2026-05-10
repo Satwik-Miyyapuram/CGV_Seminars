@@ -2,13 +2,13 @@
 config.py
 Registers the GES custom method with Nerfstudio.
 """
-from nerfstudio.engine.trainer import TrainerConfig
-from nerfstudio.plugins.types import MethodSpecification
-from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
-from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanagerConfig
-from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
-from nerfstudio.engine.optimizers import AdamOptimizerConfig
-from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
+from external_code.nerfstudio.nerfstudio.engine.trainer import TrainerConfig
+from external_code.nerfstudio.nerfstudio.plugins.types import MethodSpecification
+from external_code.nerfstudio.nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
+from external_code.nerfstudio.nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanagerConfig
+from external_code.nerfstudio.nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+from external_code.nerfstudio.nerfstudio.engine.optimizers import AdamOptimizerConfig
+from external_code.nerfstudio.nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 
 from ges_model import GESModelConfig
 base_optimizer_config = {
