@@ -2,10 +2,18 @@
 main.py
 Entry point for training the GES model using Nerfstudio's trainer.
 """
+import os
+from pathlib import Path
 import sys
+
+# root_dir = Path(__file__).parent.parent.absolute()
+# sys.path.append(str(root_dir))
+# sys.path.append(str(root_dir/"external_code"/"nerfstudio"))
+# sys.path.append(str(root_dir/"external_code"/"gsplat"))
+
 import torch
-from external_code.nerfstudio.nerfstudio.scripts.train import main as ns_train_main
-from external_code.nerfstudio.nerfstudio.engine.trainer import TrainerConfig
+from nerfstudio.scripts.train import main as ns_train_main
+from nerfstudio.engine.trainer import TrainerConfig
 import tyro
 
 
@@ -22,9 +30,8 @@ def main():
     # We pass the arguments to nerfstudio's train script.
     # The 'ges-method' matches the method_name in config.py
     cfg = config.ges_method.config
-    print(f"Using configuration: {cfg}")
-    cfg = tyro.cli(TrainerConfig, default=cfg)
-    sys.exit(ns_train_main(cfg))
+    cfg.data = Path("nerf_synthetic/chair")
+    ns_train_main(cfg)
 
 if __name__ == "__main__":
     main()

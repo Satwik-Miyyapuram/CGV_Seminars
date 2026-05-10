@@ -11,20 +11,20 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type, Union
 
-from external_code.nerfstudio.nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from external_code.nerfstudio.nerfstudio.cameras.cameras import Cameras
-from external_code.nerfstudio.nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
-from external_code.nerfstudio.nerfstudio.engine.optimizers import AdamOptimizerConfig
-from external_code.nerfstudio.nerfstudio.model_components.lib_bilagrid import color_correct, total_variation_loss
-from external_code.nerfstudio.nerfstudio.models.base_model import Model
-from external_code.nerfstudio.nerfstudio.models.splatfacto import SplatfactoModelConfig, get_viewmat, resize_image
-from external_code.nerfstudio.nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
-from external_code.nerfstudio.nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
-from external_code.nerfstudio.nerfstudio.data.scene_box import OrientedBox
-from external_code.nerfstudio.nerfstudio.utils.colors import get_color
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
+from nerfstudio.engine.optimizers import AdamOptimizerConfig
+from nerfstudio.model_components.lib_bilagrid import color_correct, total_variation_loss
+from nerfstudio.models.base_model import Model
+from nerfstudio.models.splatfacto import SplatfactoModelConfig, get_viewmat, resize_image
+from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
+from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
+from nerfstudio.data.scene_box import OrientedBox
+from nerfstudio.utils.colors import get_color
 from ges_strategy import GESStrategy
 # Assuming gsplat is in external_code/gsplat and accessible
-from external_code.gsplat.gsplat.rendering import rasterization, rasterization_2dgs
+from gsplat.rendering import rasterization, rasterization_2dgs
 
 @dataclass
 class GESModelConfig(SplatfactoModelConfig):

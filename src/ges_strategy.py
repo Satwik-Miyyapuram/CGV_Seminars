@@ -4,10 +4,10 @@ from typing import Any, Dict, Tuple, Union, TYPE_CHECKING
 import torch
 from typing_extensions import Literal
 from torch.nn import Parameter
-from external_code.gsplat.gsplat.strategy.default import DefaultStrategy
-from external_code.gsplat.gsplat.strategy.ops import _update_param_with_optimizer
-from external_code.nerfstudio.nerfstudio.utils.math import random_quat_tensor
-from external_code.nerfstudio.nerfstudio.utils.spherical_harmonics import num_sh_bases
+from gsplat.strategy.default import DefaultStrategy
+from gsplat.strategy.ops import _update_param_with_optimizer
+from nerfstudio.utils.math import random_quat_tensor
+from nerfstudio.utils.spherical_harmonics import num_sh_bases
 if TYPE_CHECKING:
     from ges_model import GESModel
 
@@ -40,7 +40,7 @@ class GESStrategy(DefaultStrategy):
         return state
     
     
-    def execute_10k_discard(self, model: GESModel, keep_mask: torch.Tensor):
+    def execute_10k_discard(self, model, keep_mask: torch.Tensor):
         """Callback function to be executed at the 10k iteration to discard the points based on the keep_mask."""
         def param_fn(name:str, p: torch.Tensor)-> torch.Tensor:
             return Parameter(p[keep_mask], requires_grad=p.requires_grad)
@@ -55,7 +55,7 @@ class GESStrategy(DefaultStrategy):
         model.surfel.features_dc = surfel_param_dict["surfel_features_dc"]
         model.surfel.features_rest = surfel_param_dict["surfel_features_rest"]
     
-    def execute_15k_visibility_prune(self, model: GESModel):
+    def execute_15k_visibility_prune(self, model):
         """Callback function to be executed at the 15k iteration to prune the points based on visibility."""
         # we will  approximate the visibility since we cannot exactly follow the paper's approach as
         # gsplat uses alpha blending instead of a z buffer for rendering. 
@@ -83,13 +83,13 @@ class GESStrategy(DefaultStrategy):
         model.surfel.features_dc = surfel_param_dict["surfel_features_dc"]
         model.surfel.features_rest = surfel_param_dict["surfel_features_rest"]
         
-    def clamp_surfel_opacity(self, model: GESModel, min_opacity: float):
+    def clamp_surfel_opacity(self, model, min_opacity: float):
         """Callback function to be executed when the surfel opacity needs to be clamped."""
         target_prob = min(min_opacity / 255.0, 0.9999)
         target_logit = torch.logit(torch.tensor(target_prob, device=model.device))
         model.surfel.opacities.data = torch.clamp_min(model.surfel.opacities.data, target_logit)
     
-    def freeze_surfel_geometry(self, model: GESModel):
+    def freeze_surfel_geometry(self, model):
         """Callback function to be executed at the 20k iteration to freeze the surfel geometry."""
         model.surfel.means.requires_grad_(False)
         model.surfel.quats.requires_grad_(False)
@@ -100,7 +100,7 @@ class GESStrategy(DefaultStrategy):
         model.surfel.scales.grad = None
         model.surfel.opacities.grad = None
     
-    def spawn_gaussians_from_saved_seeds(self, model: GESModel, saved_gaussian_seeds: torch.Tensor):
+    def spawn_gaussians_from_saved_seeds(self, model, saved_gaussian_seeds: torch.Tensor):
         """Callback function to be executed at the 20k iteration to spawn gaussians from the saved seeds."""
         num_new_gaussians = saved_gaussian_seeds.shape[0]
         device = model.device

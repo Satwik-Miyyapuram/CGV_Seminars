@@ -11,8 +11,6 @@ dependencies:
   - pytorch-cuda=11.8
   - ninja
   - pip:
-      - nerfstudio
-      - gsplat>=1.0.0
       - pytorch-msssim
       - torchmetrics[image]
       - scikit-learn
