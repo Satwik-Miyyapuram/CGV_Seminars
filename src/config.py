@@ -11,7 +11,18 @@ from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 
 from ges_model import GESModelConfig
-
+base_optimizer_config = {
+        "means": AdamOptimizerConfig(lr=1.6e-4, weight_decay=1e-15),
+        "quats": AdamOptimizerConfig(lr=1e-3, weight_decay=1e-15),
+        "scales": AdamOptimizerConfig(lr=5e-3, weight_decay=1e-15),
+        "opacities": AdamOptimizerConfig(lr=5e-2, weight_decay=1e-15),
+        "features_dc": AdamOptimizerConfig(lr=2.5e-3, weight_decay=1e-15),
+        "features_rest": AdamOptimizerConfig(lr=1.25e-4, weight_decay=1e-15),
+    }
+ges_optimizers = {}
+for name,optimizer in base_optimizer_config.items():
+    ges_optimizers[f'surfel_{name}'] = {"optimizer": optimizer, "scheduler": None}
+    ges_optimizers[f'gaussian_{name}'] = {"optimizer": optimizer, "scheduler": None}
 ges_method = MethodSpecification(
     config=TrainerConfig(
         method_name="ges-method",
@@ -27,29 +38,7 @@ ges_method = MethodSpecification(
             ),
             model=GESModelConfig(),
         ),
-        optimizers={
-            "means": {
-                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1.6e-6, max_steps=30000),
-            },
-            "features_dc": {
-                "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
-                "scheduler": None,
-            },
-            "features_rest": {
-                "optimizer": AdamOptimizerConfig(lr=0.0025 / 20, eps=1e-15),
-                "scheduler": None,
-            },
-            "opacities": {
-                "optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15),
-                "scheduler": None,
-            },
-            "scales": {
-                "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
-                "scheduler": None,
-            },
-            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
-        },
+        optimizers=ges_optimizers,
         viewer=None, # Use default viewer config
     ),
     description="Gaussian-Surfel representation built on gsplat",
