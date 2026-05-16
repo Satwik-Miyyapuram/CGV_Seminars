@@ -1,6 +1,18 @@
-.vscode/*
+
 nerf_synthetic/*
 .env/*
 outputs/*
 logs/*
 */__pycache__/*
+.env/
+external_code/nerfstudio/nerfstudio.egg-info/
+external_code/gsplat/gsplat.egg-info/
+src/__pycache__/
+outputs/
+*.pyc
+
+Paper Images/*
+data/*
+test*/*
+cgv_notes/*
+conductor/*

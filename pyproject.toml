@@ -8,3 +8,40 @@ dependencies = [
 
 [project.entry-points.'nerfstudio.method_configs']
 ges-method = "src.config:ges_method"
+
+[tool.ruff]
+# Target the specific Python version you are using
+target-version = "py311"
+# Set the maximum line length (88 is Black's default, but 88–100 is the sweet spot)
+line-length = 100
+
+[tool.ruff.lint]
+# 1. Enable specific plugin rulesets
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined variables)
+    "I",   # isort (automatically sorts and groups your imports)
+    "B",   # flake8-bugbear (catches common design flaws/bugs)
+    "C4",  # flake8-comprehensions (helps write better list/dict comprehensions)
+    "UP",  # pyupgrade (upgrades syntax to your target Python version)
+    "ARG", # flake8-unused-arguments (finds unused function arguments)
+]
+
+# 2. Ignore specific rules if they get too annoying
+ignore = [
+    "E501", # Never fail linting on line length (let the formatter handle it)
+]
+
+[tool.ruff.format]
+# Prefer double quotes over single quotes (matches Black's default style)
+quote-style = "double"
+
+# Indent with spaces instead of tabs
+indent-style = "space"
+
+# Automatically format code snippets found inside your docstrings!
+docstring-code-format = true
+
+# Use trailing commas for multi-line elements (reduces git diff noise)
+skip-magic-trailing-comma = false

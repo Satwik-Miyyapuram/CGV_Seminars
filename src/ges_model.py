@@ -2,39 +2,56 @@
 ges_model.py
 Contains the custom PyTorch Model defining the GES logic.
 """
-from pytorch_msssim import SSIM
+
+from dataclasses import dataclass, field
 
 import torch
+
+# Assuming gsplat is in external_code/gsplat and accessible
+from gsplat.rendering import rasterization, rasterization_2dgs
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer
+from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.data.scene_box import OrientedBox
+from nerfstudio.engine.callbacks import (
+    TrainingCallback,
+    TrainingCallbackAttributes,
+    TrainingCallbackLocation,
+)
+from nerfstudio.model_components.lib_bilagrid import color_correct
+from nerfstudio.models.base_model import Model
+from nerfstudio.models.splatfacto import SplatfactoModelConfig, get_viewmat, resize_image
+from nerfstudio.utils.colors import get_color
+from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
+from nerfstudio.utils.spherical_harmonics import RGB2SH, num_sh_bases
+from pytorch_msssim import SSIM
 from torch.nn import Parameter
 from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Type, Union
 
-from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from nerfstudio.cameras.cameras import Cameras
-from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
-from nerfstudio.engine.optimizers import AdamOptimizerConfig
-from nerfstudio.model_components.lib_bilagrid import color_correct, total_variation_loss
-from nerfstudio.models.base_model import Model
-from nerfstudio.models.splatfacto import SplatfactoModelConfig, get_viewmat, resize_image
-from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
-from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
-from nerfstudio.data.scene_box import OrientedBox
-from nerfstudio.utils.colors import get_color
 from ges_strategy import GESStrategy
-# Assuming gsplat is in external_code/gsplat and accessible
-from gsplat.rendering import rasterization, rasterization_2dgs
+
 
 @dataclass
 class GESModelConfig(SplatfactoModelConfig):
     """Configuration for the GES Model."""
-    _target: Type = field(default_factory=lambda: GESModel)
-    
+
+    _target: type = field(default_factory=lambda: GESModel)
+    output_depth_during_training: bool = True  # since we need surfel depth to cull gaussians during
+    # rendering, we need to output depth during training as well.
+
 
 class Surfel(torch.nn.Module):
     """Data structure for a surfel (2D)"""
-    def __init__(self, means: Parameter, quats: Parameter, scales: Parameter, opacities: Parameter, features_dc: Parameter, features_rest: Parameter):
+
+    def __init__(
+        self,
+        means: Parameter,
+        quats: Parameter,
+        scales: Parameter,
+        opacities: Parameter,
+        features_dc: Parameter,
+        features_rest: Parameter,
+    ):
         super().__init__()
         self.means = means
         self.quats = quats
@@ -42,26 +59,39 @@ class Surfel(torch.nn.Module):
         self.opacities = opacities
         self.features_dc = features_dc
         self.features_rest = features_rest
+
     @classmethod
     def from_random(cls, rand_size_init: int, scale_init: float, sh_degree: int):
         means = Parameter((torch.rand((rand_size_init, 3)) - 0.5) * scale_init)
         return cls.from_means(means, sh_degree)
+
     @classmethod
     def from_means(cls, means: Parameter, sh_degree: int):
         distances, _ = k_nearest_sklearn(means.data, 3)
         # find the average of the three nearest neighbors for each point and use that as the scale
         avg_dist = distances.mean(dim=-1, keepdim=True)
         scales = Parameter(torch.log(avg_dist.repeat(1, 3)))
-        num_points =  means.shape[0]
+        num_points = means.shape[0]
         quats = Parameter(random_quat_tensor(num_points))
         dim_sh = num_sh_bases(sh_degree)
         features_dc = Parameter(torch.zeros((num_points, 3)))
-        features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3))) # For future use
+        features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3)))  # For future use
         opacities = Parameter(torch.zeros((num_points, 1)))
         return cls(means, quats, scales, opacities, features_dc, features_rest)
+
+
 class Gaussian(torch.nn.Module):
     """Data structure for a gaussian (3D)"""
-    def __init__(self, means: Parameter, quats: Parameter, scales: Parameter, opacities: Parameter, features_dc: Parameter, features_rest: Parameter):
+
+    def __init__(
+        self,
+        means: Parameter,
+        quats: Parameter,
+        scales: Parameter,
+        opacities: Parameter,
+        features_dc: Parameter,
+        features_rest: Parameter,
+    ):
         super().__init__()
         self.means = means
         self.quats = quats
@@ -69,20 +99,27 @@ class Gaussian(torch.nn.Module):
         self.opacities = opacities
         self.features_dc = features_dc
         self.features_rest = features_rest
+
+
 class GESModel(Model):
     """
     Gaussian-Surfel Model extending Nerfstudio's base Model.
     """
+
     config: GESModelConfig
-    
+
     def __init__(
         self,
         *args,
-        seed_points: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        seed_points: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ):
         self.seed_points = seed_points
         super().__init__(*args, **kwargs)
+        self.register_buffer(
+            "saved_gaussian_seeds", torch.zeros((0, 3))
+        )  # buffer to save discarded surfel means for gaussian spawning
+        self.register_buffer("surfel_radii_cache", torch.zeros((0,)))
 
     def populate_modules(self):
         """
@@ -95,30 +132,27 @@ class GESModel(Model):
         if self.seed_points is not None and not self.config.random_init:
             print("Initializing from seed points...")
             means = Parameter(self.seed_points[0])
-            self.surfel = Surfel.from_means(
-                means=means,
-                sh_degree=self.config.sh_degree
-            )
+            self.surfel = Surfel.from_means(means=means, sh_degree=self.config.sh_degree)
         else:
             self.surfel = Surfel.from_random(
                 rand_size_init=self.config.num_random,
                 scale_init=self.config.random_scale,
-                sh_degree=self.config.sh_degree
+                sh_degree=self.config.sh_degree,
             )
         num_points = self.surfel.means.shape[0]
         dim_sh = num_sh_bases(self.config.sh_degree)
         if (
             self.seed_points is not None
             and not self.config.random_init
-            and self.seed_points[0].shape[1]>0
-            ):
+            and self.seed_points[0].shape[1] > 0
+        ):
             print("Initializing from seed points...")
             shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().to(self.device)
             if self.config.sh_degree > 0:
-                shs[:, 0, :3] = RGB2SH(self.seed_points[1]/255)
+                shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
                 shs[:, 1:, 3:] = 0.0
             else:
-                shs[:, 0, :3] = torch.logit(self.seed_points[1]/255, eps=1e-10)
+                shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
             self.surfel.features_dc = Parameter(shs[:, 0, :])
             self.surfel.features_rest = Parameter(shs[:, 1:, :])
         else:
@@ -131,10 +165,10 @@ class GESModel(Model):
                 scales=Parameter(torch.empty((0, 3))),
                 opacities=Parameter(torch.empty((0, 1))),
                 features_dc=Parameter(torch.empty((0, 3))),
-                features_rest=Parameter(torch.empty((0, dim_sh - 1, 3)))
+                features_rest=Parameter(torch.empty((0, dim_sh - 1, 3))),
             )
 
-        self.camera_optimizer: CameraOptimizer =  self.config.camera_optimizer.setup(
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
         )
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -142,17 +176,18 @@ class GESModel(Model):
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self.step = 0
 
-        self.crop_box: Optional[OrientedBox] = None
+        self.crop_box: OrientedBox | None = None
         if self.config.background_color == "random":
             self.background_color = torch.tensor(
                 [0.1490, 0.1647, 0.2157]
-            )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.
+            )  # This color is the same as the default background color in Viser.
+            # This would only affect the background color when rendering.
         else:
             self.background_color = get_color(self.config.background_color)
         self.strategy = GESStrategy()
         self.strategy_state = self.strategy.initialize_state()
 
-    def get_param_groups(self) -> Dict[str, List[Parameter]]:
+    def get_param_groups(self) -> dict[str, list[Parameter]]:
         """
         Group parameters for the optimizer specified in config.py.
         """
@@ -170,7 +205,8 @@ class GESModel(Model):
             "gaussian_features_dc": [self.gaussian.features_dc],
             "gaussian_features_rest": [self.gaussian.features_rest],
         }
-    def get_surfel_param_dict(self) -> Dict[str, Parameter]:
+
+    def get_surfel_param_dict(self) -> dict[str, Parameter]:
         """Get a dictionary of surfel parameters for easy access in the strategy."""
         return {
             "means": self.surfel.means,
@@ -180,7 +216,8 @@ class GESModel(Model):
             "features_dc": self.surfel.features_dc,
             "features_rest": self.surfel.features_rest,
         }
-    def get_gaussian_param_dict(self) -> Dict[str, Parameter]:
+
+    def get_gaussian_param_dict(self) -> dict[str, Parameter]:
         """Get a dictionary of gaussian parameters for easy access in the strategy."""
         return {
             "means": self.gaussian.means,
@@ -190,7 +227,8 @@ class GESModel(Model):
             "features_dc": self.gaussian.features_dc,
             "features_rest": self.gaussian.features_rest,
         }
-    def get_densification_params(self, step) -> Optional[Dict[str, Parameter]]:
+
+    def get_densification_params(self, step) -> dict[str, Parameter] | None:
         """Get the parameters to be used for densification based on the current step."""
         if step <= 10000:
             return self.get_surfel_param_dict()
@@ -199,22 +237,38 @@ class GESModel(Model):
         return None
 
     def load_state_dict(self, dict, **kwargs):
-        """Override load_state_dict to handle changing parameter sizes due to densification/pruning."""
+        """
+        Override load_state_dict to handle changing parameter
+        sizes due to densification/pruning.
+        """
         for key in ["surfel", "gaussian"]:
             if f"{key}.means" in dict:
                 num_pts = dict[f"{key}.means"].shape[0]
                 getattr(self, key).means = Parameter(torch.zeros(num_pts, 3, device=self.device))
                 getattr(self, key).quats = Parameter(torch.zeros(num_pts, 4, device=self.device))
                 getattr(self, key).scales = Parameter(torch.zeros(num_pts, 3, device=self.device))
-                getattr(self, key).opacities = Parameter(torch.zeros(num_pts, 1, device=self.device))
-                getattr(self, key).features_dc = Parameter(torch.zeros(num_pts, 3, device=self.device))
-                
+                getattr(self, key).opacities = Parameter(
+                    torch.zeros(num_pts, 1, device=self.device)
+                )
+                getattr(self, key).features_dc = Parameter(
+                    torch.zeros(num_pts, 3, device=self.device)
+                )
+
                 features_rest_shape = dict[f"{key}.features_rest"].shape
-                getattr(self, key).features_rest = Parameter(torch.zeros(*features_rest_shape, device=self.device))
-        
+                getattr(self, key).features_rest = Parameter(
+                    torch.zeros(*features_rest_shape, device=self.device)
+                )
+
+        if "saved_gaussian_seeds" in dict:
+            num_seeds = dict["saved_gaussian_seeds"].shape[0]
+            self.saved_gaussian_seeds = torch.zeros((num_seeds, 3), device=self.device)
+        if "surfel_radii_cache" in dict:
+            num_radii = dict["surfel_radii_cache"].shape[0]
+            self.surfel_radii_cache = torch.zeros((num_radii,), device=self.device)
+
         super().load_state_dict(dict, **kwargs)
 
-    def get_densification_optimizers(self, step) -> Optional[Dict[str, torch.optim.Optimizer]]:
+    def get_densification_optimizers(self, step) -> dict[str, torch.optim.Optimizer] | None:
         """Get the optimizers to be used for densification based on the current step."""
         if step <= 10000:
             return {
@@ -223,7 +277,7 @@ class GESModel(Model):
                 "scales": self.optimizers["surfel_scales"],
                 "opacities": self.optimizers["surfel_opacities"],
                 "features_dc": self.optimizers["surfel_features_dc"],
-                "features_rest": self.optimizers["surfel_features_rest"]
+                "features_rest": self.optimizers["surfel_features_rest"],
             }
         elif step > 20000:
             return {
@@ -232,7 +286,7 @@ class GESModel(Model):
                 "scales": self.optimizers["gaussian_scales"],
                 "opacities": self.optimizers["gaussian_opacities"],
                 "features_dc": self.optimizers["gaussian_features_dc"],
-                "features_rest": self.optimizers["gaussian_features_rest"]
+                "features_rest": self.optimizers["gaussian_features_rest"],
             }
         return None
 
@@ -240,61 +294,52 @@ class GESModel(Model):
         self.step = step
         self.optimizers = optimizers.optimizers
         self.schedulers = optimizers.schedulers
-    def save_params(self, step, densification_params):
-        """Save the params to the respective vars"""
-        if step <= 10000:
-            self.surfel.means = densification_params["means"]
-            self.surfel.quats = densification_params["quats"]
-            self.surfel.scales = densification_params["scales"]
-            self.surfel.opacities = densification_params["opacities"]
-            self.surfel.features_dc = densification_params["features_dc"]
-            self.surfel.features_rest = densification_params["features_rest"]
-        elif step > 20000:
-            self.gaussian.means = densification_params["means"]
-            self.gaussian.quats = densification_params["quats"]
-            self.gaussian.scales = densification_params["scales"]
-            self.gaussian.opacities = densification_params["opacities"]
-            self.gaussian.features_dc = densification_params["features_dc"]
-            self.gaussian.features_rest = densification_params["features_rest"]
-        
-    def get_training_callbacks(self, training_callback_attributes: TrainingCallbackAttributes) -> List[TrainingCallback]:
+
+    def get_training_callbacks(
+        self, training_callback_attributes: TrainingCallbackAttributes
+    ) -> list[TrainingCallback]:
         """
         Register callbacks for the Discard Phase (Iter 10k) and Ramp Phase (Iter 18k-20k).
         """
         callbacks = []
-        #TODO: implement the discard phase and ramp phase logic in the respective callbacks, currently just placeholders
+        # TODO: implement the discard phase and ramp phase logic in the respective callbacks, currently just placeholders
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
                 func=self.step_callback,
-                args=[training_callback_attributes.optimizers]
+                args=[training_callback_attributes.optimizers],
             )
         )
+
         def phase_10k_callback(step: int):
-            if step == 10000:
-                print("Reached 10k iterations, entering discard phase...")
+            if step == self.strategy.surfel_density_stop_iter:
+                print(f"Reached {step} iterations, entering discard phase...")
                 opacities = torch.sigmoid(self.surfel.opacities.detach())
                 # Squeeze might make it scalar if there's 1 point, so we reshape to 1D
                 # Lowering threshold so we get a meaningful split to spawn gaussians
                 mask = (opacities >= 0.6).view(-1)
-                
+
                 # If the threshold drops everything, we need to keep at least a few points to prevent a crash downstream
                 if mask.sum() == 0:
-                    print("Warning: Opacity threshold 0.5 discarded all points! Falling back to discarding nothing for stability.")
+                    print(
+                        "Warning: Opacity threshold 0.5 discarded all points! Falling back to discarding nothing for stability."
+                    )
                     mask = torch.ones_like(mask)
-                    
+
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
                 self.saved_gaussian_seeds = self.surfel.means.detach()[discard_mask].clone()
-                print(f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels.")
-                self.strategy.execute_10k_discard(self, mask)
+                print(
+                    f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels."
+                )
+                self.strategy.execute_discard_phase(self, mask)
                 self.strategy.clamp_surfel_opacity(self, min_opacity=30.0)
-                
-            
+
         def phase_15k_callback(step: int):
             if step == 15000:
                 print("Reached 15k iterations, Visibility Pruning phase...")
-                self.strategy.execute_15k_visibility_prune(self)
+                self.strategy.execute_visibility_prune_phase(self)
+
         def phase_18k_19k_callback(step: int):
             if step == 18000:
                 print("Reached 18k iterations, opacity clamp to 60.0 ...")
@@ -302,32 +347,36 @@ class GESModel(Model):
             elif step == 19000:
                 print("Reached 20k iterations opacity clamp to 90.0 ...")
                 self.strategy.clamp_surfel_opacity(self, min_opacity=90.0)
+
         def phase_20k_callback(step: int):
-            if step == 20000:
+            if step == self.strategy.gaussian_spawn_iter:
                 print("Reached 20k iterations, solidifying surfels and spawning gaussians...")
                 self.strategy.clamp_surfel_opacity(self, min_opacity=255.0)
+                assert isinstance(self.saved_gaussian_seeds, torch.Tensor), (
+                    "Saved gaussian seeds not found. Make sure the discard phase is correctly saving the discarded surfel means."
+                )
                 self.strategy.spawn_gaussians_from_saved_seeds(self, self.saved_gaussian_seeds)
                 self.strategy.freeze_surfel_geometry(self)
+
+        def pre_backward_callback(step: int):
+            self.strategy.step_pre_backward(self, step)
+
         def densification_post_backward_callback(step: int):
-            densification_params = self.get_densification_params(step)
-            if densification_params is not None:
-                densification_info = self.info["surfels"] if step <= 10000 else self.info["gaussians"]
-                densification_state = self.strategy_state["surfels"] if step <= 10000 else self.strategy_state["gaussians"]
-                densification_optimizers = self.get_densification_optimizers(step)
-                self.strategy.step_post_backward(
-                    params=densification_params,
-                    optimizers=densification_optimizers,
-                    state=densification_state,
-                    step=step,
-                    info=densification_info,
-                )
-                self.save_params(step, densification_params)
+            self.strategy.step_post_backward(self, step)
+
         def save_milestone_callback(step: int):
-            if step in [9999,10001, 15000-1, 15000+1, 17500, 20000-1, 20000+1]:
+            if step in [9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1]:
                 filename = f"milestone_{step}.pth"
                 torch.save(self.state_dict(), filename)
                 print(f"Saved model state at milestone iteration {step} to {filename}")
-                
+
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                update_every_num_iters=1,
+                func=pre_backward_callback,
+            )
+        )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
@@ -363,13 +412,9 @@ class GESModel(Model):
                 func=phase_20k_callback,
             )
         )
-        
-        # Add another callback for the tau ramp logic
-        # ...
-        
+
         return callbacks
-    
-    
+
     def _get_downscale_factor(self):
         if self.training:
             return 2 ** max(
@@ -378,11 +423,13 @@ class GESModel(Model):
             )
         else:
             return 1
+
     def _downscale_if_required(self, image):
         d = self._get_downscale_factor()
         if d > 1:
             return resize_image(image, d)
         return image
+
     def _get_background_color(self):
         if self.config.background_color == "random":
             # Randomize background color every 1000 steps during training
@@ -397,14 +444,17 @@ class GESModel(Model):
         else:
             raise ValueError(f"Invalid background color option: {self.config.background_color}")
         return background_color.to(self.device)
+
     @staticmethod
-    def get_empty_outputs(width: int, height: int, background: torch.Tensor) -> Dict[str, Union[torch.Tensor, List]]:
+    def get_empty_outputs(
+        width: int, height: int, background: torch.Tensor
+    ) -> dict[str, torch.Tensor | list]:
         rgb = background.repeat(height, width, 1)
         depth = background.new_ones(*rgb.shape[:2], 1) * 10
         accumulation = background.new_zeros(*rgb.shape[:2], 1)
         return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": background}
-    
-    def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
+
+    def get_outputs(self, camera: Cameras) -> dict[str, torch.Tensor | list]:
         """
         The core rendering logic for a given camera.
         """
@@ -425,61 +475,82 @@ class GESModel(Model):
             gaussian_crop_ids = self.crop_box.within(self.gaussian.means).squeeze()
             surfel_crop_ids = self.crop_box.within(self.surfel.means).squeeze()
             if gaussian_crop_ids.sum() == 0 and surfel_crop_ids.sum() == 0:
-                return self.get_empty_outputs(int(camera.width.item()), int(camera.height.item()), self.background_color)
+                return self.get_empty_outputs(
+                    int(camera.width.item()), int(camera.height.item()), self.background_color
+                )
 
-        surfel_crop = self.surfel if surfel_crop_ids is None else Surfel(
-            means=Parameter(self.surfel.means[surfel_crop_ids]),
-            quats=Parameter(self.surfel.quats[surfel_crop_ids]),
-            scales=Parameter(self.surfel.scales[surfel_crop_ids]),
-            opacities=Parameter(self.surfel.opacities[surfel_crop_ids]),
-            features_dc=Parameter(self.surfel.features_dc[surfel_crop_ids]),
-            features_rest=Parameter(self.surfel.features_rest[surfel_crop_ids])
+        surfel_crop = (
+            self.surfel
+            if surfel_crop_ids is None
+            else Surfel(
+                means=Parameter(self.surfel.means[surfel_crop_ids]),
+                quats=Parameter(self.surfel.quats[surfel_crop_ids]),
+                scales=Parameter(self.surfel.scales[surfel_crop_ids]),
+                opacities=Parameter(self.surfel.opacities[surfel_crop_ids]),
+                features_dc=Parameter(self.surfel.features_dc[surfel_crop_ids]),
+                features_rest=Parameter(self.surfel.features_rest[surfel_crop_ids]),
+            )
         )
-        gaussian_crop = self.gaussian if gaussian_crop_ids is None else Gaussian(
-            means=Parameter(self.gaussian.means[gaussian_crop_ids]),
-            quats=Parameter(self.gaussian.quats[gaussian_crop_ids]),
-            scales=Parameter(self.gaussian.scales[gaussian_crop_ids]),
-            opacities=Parameter(self.gaussian.opacities[gaussian_crop_ids]),
-            features_dc=Parameter(self.gaussian.features_dc[gaussian_crop_ids]),
-            features_rest=Parameter(self.gaussian.features_rest[gaussian_crop_ids])
+        gaussian_crop = (
+            self.gaussian
+            if gaussian_crop_ids is None
+            else Gaussian(
+                means=Parameter(self.gaussian.means[gaussian_crop_ids]),
+                quats=Parameter(self.gaussian.quats[gaussian_crop_ids]),
+                scales=Parameter(self.gaussian.scales[gaussian_crop_ids]),
+                opacities=Parameter(self.gaussian.opacities[gaussian_crop_ids]),
+                features_dc=Parameter(self.gaussian.features_dc[gaussian_crop_ids]),
+                features_rest=Parameter(self.gaussian.features_rest[gaussian_crop_ids]),
+            )
         )
-        surfel_color_crop = torch.cat((surfel_crop.features_dc[:,None,:], surfel_crop.features_rest), dim=1)
-        gaussian_color_crop = torch.cat((gaussian_crop.features_dc[:,None,:], gaussian_crop.features_rest), dim=1)
-        
+        surfel_color_crop = torch.cat(
+            (surfel_crop.features_dc[:, None, :], surfel_crop.features_rest), dim=1
+        )
+        gaussian_color_crop = torch.cat(
+            (gaussian_crop.features_dc[:, None, :], gaussian_crop.features_rest), dim=1
+        )
+
         camera_scale_fac = self._get_downscale_factor()
-        camera.rescale_output_resolution(1/camera_scale_fac)
-        veiwmat = get_viewmat(optimized_camera_to_world)
-        if veiwmat.dim() == 2:
-            veiwmat = veiwmat.unsqueeze(0)
-        veiwmat = veiwmat.to(self.device)
+        camera.rescale_output_resolution(1 / camera_scale_fac)
+        viewmat = get_viewmat(optimized_camera_to_world)
+        if viewmat.dim() == 2:
+            viewmat = viewmat.unsqueeze(0)
+        viewmat = viewmat.to(self.device)
         intrinsic_mat = camera.get_intrinsics_matrices()
         if intrinsic_mat.dim() == 2:
             intrinsic_mat = intrinsic_mat.unsqueeze(0)
-        intrinsic_mat=intrinsic_mat.to(self.device)
+        intrinsic_mat = intrinsic_mat.to(self.device)
         height = int(camera.height.item())
         width = int(camera.width.item())
         camera.rescale_output_resolution(camera_scale_fac)
-        
+
         if self.config.output_depth_during_training or not self.training:
             render_mode = "RGB+ED"
         else:
             render_mode = "RGB"
         if self.config.sh_degree > 0:
-            sh_degree_to_use = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
+            sh_degree_to_use = min(
+                self.step // self.config.sh_degree_interval, self.config.sh_degree
+            )
         else:
             surfel_color_crop = torch.sigmoid(surfel_color_crop).squeeze(1)  # [N, 1, 3] -> [N, 3]
-            gaussian_color_crop = torch.sigmoid(gaussian_color_crop).squeeze(1)  # [N, 1, 3] -> [N, 3]
+            gaussian_color_crop = torch.sigmoid(gaussian_color_crop).squeeze(
+                1
+            )  # [N, 1, 3] -> [N, 3]
             sh_degree_to_use = None
-        # print(f"devices: means on {surfel_crop.means.device}, viewmat on {veiwmat.device}, intrinsic on {intrinsic_mat.device}, color on {surfel_color_crop.device},quats on {surfel_crop.quats.device}, scales on {surfel_crop.scales.device}, opacities on {surfel_crop.opacities.device}")
+        # print(f"devices: means on {surfel_crop.means.device}, viewmat on {veiwmat.device},
+        # intrinsic on {intrinsic_mat.device}, color on {surfel_color_crop.device},quats on
+        # {surfel_crop.quats.device}, scales on {surfel_crop.scales.device}, opacities on
+        # {surfel_crop.opacities.device}")
         # rasterization of surfels
         if surfel_crop.means.shape[0] > 0:
-            surfel_rgb, surfel_alpha, _, _,_,_, surfel_info = rasterization_2dgs(
+            surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_2dgs(
                 means=surfel_crop.means,
                 quats=surfel_crop.quats,
                 scales=surfel_crop.scales,
                 opacities=surfel_crop.opacities.squeeze(-1),
                 colors=surfel_color_crop,
-                viewmats=veiwmat,
+                viewmats=viewmat,
                 Ks=intrinsic_mat,
                 width=width,
                 height=height,
@@ -488,22 +559,69 @@ class GESModel(Model):
                 sh_degree=sh_degree_to_use,
             )
         else:
-            surfel_rgb = self.get_empty_outputs(width, height, self.background_color)["rgb"].unsqueeze(0).to(self.device)
+            surfel_rgb = (
+                self.get_empty_outputs(width, height, self.background_color)["rgb"]
+                .unsqueeze(0)
+                .to(self.device)
+            )
             if render_mode == "RGB+ED":
-                surfel_depth = self.get_empty_outputs(width, height, self.background_color)["depth"].unsqueeze(0).to(self.device)
+                surfel_depth = (
+                    self.get_empty_outputs(width, height, self.background_color)["depth"]
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
                 surfel_rgb = torch.cat([surfel_rgb, surfel_depth], dim=-1)
             surfel_alpha = torch.zeros_like(surfel_rgb[..., :1])
             surfel_info = None
-        
-            
+
+        if surfel_rgb.shape[-1] == 4:
+            surfel_depth = surfel_rgb[..., 3:4]
+        else:
+            surfel_depth = torch.zeros((height, width, 1), device=self.device) + 10.0
+
         if self.gaussian.means.shape[0] > 0:
+            R = viewmat[0, :3, :3]
+            T = viewmat[0, :3, 3]
+            cam_space_means = torch.matmul(gaussian_crop.means, R.T) + T
+            gaussian_depths = cam_space_means[..., 2]
+            # project to 2d screen coords
+            fx, fy = intrinsic_mat[0, 0, 0], intrinsic_mat[0, 1, 1]
+            cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
+
+            x_screen = (gaussian_crop.means[..., 0] * fx) / (gaussian_depths + 1e-5) + cx
+            y_screen = (gaussian_crop.means[..., 1] * fy) / (gaussian_depths + 1e-5) + cy
+
+            x_norm = (x_screen / width) * 2.0 - 1.0
+            y_norm = (y_screen / height) * 2.0 - 1.0
+            grid = torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)  # [1, 1, N, 2]
+
+            surfel_depth_map = surfel_depth.permute(2, 0, 1).unsqueeze(0)  # [1, 1, H, W]
+            sampled_depths = torch.nn.functional.grid_sample(
+                surfel_depth_map, grid, mode="nearest", padding_mode="border", align_corners=False
+            ).squeeze()  # [N]
+            delta = 0.05  # depth offset from surfel to cull gaussian
+
+            valid_mask = gaussian_depths < sampled_depths + delta
+
+            in_screen_mask = (
+                (x_screen >= 0) & (x_screen < width) & (y_screen >= 0) & (y_screen < height)
+            )
+
+            valid_mask = valid_mask & in_screen_mask
+
+            culled_opacities = gaussian_crop.opacities.clone()
+            culled_opacities[
+                ~valid_mask
+            ] = -100.0  # set to a very low value so that after sigmoid it becomes near zero and
+            # gets culled in rendering
+
             gaussian_render, gaussian_alpha, gaussian_info = rasterization(
                 means=gaussian_crop.means,
                 quats=gaussian_crop.quats,
                 scales=gaussian_crop.scales,
-                opacities=gaussian_crop.opacities.squeeze(),
+                opacities=culled_opacities.squeeze(-1),
                 colors=gaussian_color_crop,
-                viewmats=veiwmat,
+                viewmats=viewmat,
                 Ks=intrinsic_mat,
                 width=width,
                 height=height,
@@ -516,60 +634,44 @@ class GESModel(Model):
             gaussian_render = torch.zeros_like(surfel_rgb)
             gaussian_alpha = torch.zeros_like(surfel_alpha)
             gaussian_info = None
-        self.info = {
-            "surfels": surfel_info,
-            "gaussians": gaussian_info
-        }
+        self.info = {"surfels": surfel_info, "gaussians": gaussian_info}
         if self.training:
             if self.step <= 15000:
                 if surfel_info is not None:
                     surfel_radii = surfel_info["radii"].detach().max(dim=-1).values.squeeze(0)
-                    if self.strategy_state["surfels"]["radii"] is None:
-                        self.strategy_state["surfels"]["radii"] = surfel_radii
-                    else:
-                        self.strategy_state["surfels"]["radii"] = torch.maximum(self.strategy_state["surfels"]["radii"], surfel_radii)
+                    if self.surfel_radii_cache.shape[0] != surfel_radii.shape[0]:
+                        self.surfel_radii_cache = torch.zeros_like(surfel_radii)
+                    self.surfel_radii_cache = torch.maximum(self.surfel_radii_cache, surfel_radii)
+                    self.strategy_state["surfels"]["radii"] = self.surfel_radii_cache
                 else:
                     surfel_radii = None
-                
-                
-            
-            densification_params = self.get_densification_params(self.step)
-            if densification_params is not None:
-                densification_info = self.info["surfels"] if self.step <= 10000 else self.info["gaussians"]
-                densification_state = self.strategy_state["surfels"] if self.step <= 10000 else self.strategy_state["gaussians"]
-                densification_optimizers = self.get_densification_optimizers(self.step)
-                self.strategy.step_pre_backward(
-                    params = densification_params,
-                    optimizers = densification_optimizers,
-                    state = densification_state,
-                    step = self.step,
-                    info = densification_info,
-                )
-            
-        gaussian_alpha = gaussian_alpha[:,...]
-        
+
+            self.strategy.step_pre_backward(self, self.step)
+
+        gaussian_alpha = gaussian_alpha[:, ...]
+
         background_color = self._get_background_color()
-        
-        gaussian_rgb = gaussian_render[:,...,:3]
+
+        gaussian_rgb = gaussian_render[:, ..., :3]
         gaussian_rgb = torch.clamp(gaussian_rgb, 0.0, 1.0)
-        surfel_rgb_color = surfel_rgb[:,...,:3]
+        surfel_rgb_color = surfel_rgb[:, ..., :3]
         surfel_rgb_color = torch.clamp(surfel_rgb_color, 0.0, 1.0)
-        
-        #eq. 5 compositing
+
+        # eq. 5 compositing
         C_S = surfel_rgb_color.squeeze(0)
         W_S = surfel_alpha.squeeze(0)
         C_G = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
-        
-        rgb =(C_S + C_G) / (W_S + W_G + 1e-5)
-        
-        final_alpha = torch.clamp(W_S + W_G, 0.0,1.0)
+
+        rgb = (C_S + C_G) / (W_S + W_G + 1e-5)
+
+        final_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
         rgb = rgb + (1 - final_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
-        
+
         if render_mode == "RGB+ED":
-            gaussian_depth = gaussian_render[:,...,3:4].squeeze(0)
-            surfel_depth = surfel_rgb[:,...,3:4].squeeze(0)
+            gaussian_depth = gaussian_render[:, ..., 3:4].squeeze(0)
+            surfel_depth = surfel_rgb[:, ..., 3:4].squeeze(0)
             depth = (gaussian_depth * W_G + surfel_depth * W_S) / (W_S + W_G + 1e-5)
             depth = torch.where(gaussian_alpha > 0, depth, depth.detach().max())
         else:
@@ -578,12 +680,15 @@ class GESModel(Model):
             background_color = background_color.expand(height, width, 3)
         return {
             "rgb": rgb,
-            "depth": depth, # type: ignore
+            "depth": depth,  # type: ignore
             "accumulation": final_alpha,
-            "background": background_color
+            "background": background_color,
         }
+
     def get_gt_img(self, image: torch.Tensor):
-        """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
+        """
+        Compute groundtruth image with iteration dependent downscale factor for evaluation
+        purpose
 
         Args:
             image: tensor.Tensor in type uint8 or float32
@@ -592,6 +697,7 @@ class GESModel(Model):
             image = image.float() / 255.0
         gt_img = self._downscale_if_required(image)
         return gt_img.to(self.device)
+
     def composite_with_background(self, image, background) -> torch.Tensor:
         """Composite the ground truth image with a background color when it has an alpha channel.
 
@@ -604,14 +710,17 @@ class GESModel(Model):
             return alpha * image[..., :3] + (1 - alpha) * background
         else:
             return image
-    def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
+
+    def get_metrics_dict(self, outputs, batch) -> dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
         Args:
             outputs: the output to compute loss dict to
             batch: ground truth batch corresponding to outputs
         """
-        gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        gt_rgb = self.composite_with_background(
+            self.get_gt_img(batch["image"]), outputs["background"]
+        )
         metrics_dict = {}
         predicted_rgb = outputs["rgb"]
 
@@ -625,10 +734,14 @@ class GESModel(Model):
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
-    def set_crop(self, crop_box: Optional[OrientedBox]):
+
+    def set_crop(self, crop_box: OrientedBox | None):
         self.crop_box = crop_box
+
     @torch.no_grad()
-    def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
+    def get_outputs_for_camera(
+        self, camera: Cameras, obb_box: OrientedBox | None = None
+    ) -> dict[str, torch.Tensor]:
         """Takes in a camera, generates the raybundle, and computes the output of the model.
         Overridden for a camera-based gaussian model.
 
@@ -641,8 +754,8 @@ class GESModel(Model):
         return outs  # type: ignore
 
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
-    ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        self, outputs: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]
+    ) -> tuple[dict[str, float], dict[str, torch.Tensor]]:
         """Writes the test image outputs.
 
         Args:
@@ -654,7 +767,9 @@ class GESModel(Model):
         Returns:
             A dictionary of metrics.
         """
-        gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        gt_rgb = self.composite_with_background(
+            self.get_gt_img(batch["image"]), outputs["background"]
+        )
         predicted_rgb = outputs["rgb"]
         cc_rgb = None
 
@@ -675,7 +790,7 @@ class GESModel(Model):
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
-        
+
         metrics_dict["surfel_count"] = float(self.surfel.means.shape[0])
         metrics_dict["gaussian_count"] = float(self.gaussian.means.shape[0])
 
@@ -692,7 +807,7 @@ class GESModel(Model):
 
         return metrics_dict, images_dict
 
-    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
+    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 
         Args:
@@ -700,7 +815,9 @@ class GESModel(Model):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
-        gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        gt_img = self.composite_with_background(
+            self.get_gt_img(batch["image"]), outputs["background"]
+        )
         pred_img = outputs["rgb"]
 
         # Set masked part of both ground-truth and rendered image to black.
@@ -714,9 +831,11 @@ class GESModel(Model):
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
-        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
-        
-        #TODO: differentiate the scales for surfel and gaussian
+        simloss = 1 - self.ssim(
+            gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...]
+        )
+
+        # TODO: differentiate the scales for surfel and gaussian
         if self.config.use_scale_regularization and self.step % 10 == 0:
             surfel_scale_exp = torch.exp(self.surfel.scales)
             surfel_scale_reg = (
@@ -734,8 +853,8 @@ class GESModel(Model):
                 )
                 - self.config.max_gauss_ratio
             )
-            
-            scale_reg = 0.1 * (surfel_scale_reg.mean()+gaussian_scale_reg.mean())
+
+            scale_reg = 0.1 * (surfel_scale_reg.mean() + gaussian_scale_reg.mean())
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
