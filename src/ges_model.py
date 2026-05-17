@@ -3,7 +3,9 @@ ges_model.py
 Contains the custom PyTorch Model defining the GES logic.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -11,6 +13,7 @@ import torch
 from gsplat.rendering import rasterization, rasterization_2dgs
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
@@ -106,7 +109,7 @@ class GESModel(Model):
     Gaussian-Surfel Model extending Nerfstudio's base Model.
     """
 
-    config: GESModelConfig
+    config: GESModelConfig  # type: ignore
 
     def __init__(
         self,
@@ -236,14 +239,16 @@ class GESModel(Model):
             return self.get_gaussian_param_dict()
         return None
 
-    def load_state_dict(self, dict, **kwargs):
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ) -> Any:
         """
         Override load_state_dict to handle changing parameter
         sizes due to densification/pruning.
         """
         for key in ["surfel", "gaussian"]:
-            if f"{key}.means" in dict:
-                num_pts = dict[f"{key}.means"].shape[0]
+            if f"{key}.means" in state_dict:
+                num_pts = state_dict[f"{key}.means"].shape[0]
                 getattr(self, key).means = Parameter(torch.zeros(num_pts, 3, device=self.device))
                 getattr(self, key).quats = Parameter(torch.zeros(num_pts, 4, device=self.device))
                 getattr(self, key).scales = Parameter(torch.zeros(num_pts, 3, device=self.device))
@@ -254,19 +259,19 @@ class GESModel(Model):
                     torch.zeros(num_pts, 3, device=self.device)
                 )
 
-                features_rest_shape = dict[f"{key}.features_rest"].shape
+                features_rest_shape = state_dict[f"{key}.features_rest"].shape
                 getattr(self, key).features_rest = Parameter(
                     torch.zeros(*features_rest_shape, device=self.device)
                 )
 
-        if "saved_gaussian_seeds" in dict:
-            num_seeds = dict["saved_gaussian_seeds"].shape[0]
+        if "saved_gaussian_seeds" in state_dict:
+            num_seeds = state_dict["saved_gaussian_seeds"].shape[0]
             self.saved_gaussian_seeds = torch.zeros((num_seeds, 3), device=self.device)
-        if "surfel_radii_cache" in dict:
-            num_radii = dict["surfel_radii_cache"].shape[0]
+        if "surfel_radii_cache" in state_dict:
+            num_radii = state_dict["surfel_radii_cache"].shape[0]
             self.surfel_radii_cache = torch.zeros((num_radii,), device=self.device)
 
-        super().load_state_dict(dict, **kwargs)
+        super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def get_densification_optimizers(self, step) -> dict[str, torch.optim.Optimizer] | None:
         """Get the optimizers to be used for densification based on the current step."""
@@ -387,32 +392,38 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple([10000]),
+                iters=(10000,),
                 func=phase_10k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple([15000]),
+                iters=(15000,),
                 func=phase_15k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple([18000, 19000]),
+                iters=(18000, 19000),
                 func=phase_18k_19k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple([20000]),
+                iters=(20000,),
                 func=phase_20k_callback,
             )
         )
-
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                iters=(9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1),
+                func=save_milestone_callback,
+            )
+        )
         return callbacks
 
     def _get_downscale_factor(self):
@@ -454,10 +465,11 @@ class GESModel(Model):
         accumulation = background.new_zeros(*rgb.shape[:2], 1)
         return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": background}
 
-    def get_outputs(self, camera: Cameras) -> dict[str, torch.Tensor | list]:
+    def get_outputs(self, ray_bundle: RayBundle | Cameras) -> dict[str, torch.Tensor | list]:
         """
         The core rendering logic for a given camera.
         """
+        camera = ray_bundle
         if not isinstance(camera, Cameras):
             print("Called get_outputs with not a camera")
             return {}
@@ -559,17 +571,14 @@ class GESModel(Model):
                 sh_degree=sh_degree_to_use,
             )
         else:
-            surfel_rgb = (
-                self.get_empty_outputs(width, height, self.background_color)["rgb"]
-                .unsqueeze(0)
-                .to(self.device)
-            )
+            empty_out = self.get_empty_outputs(width, height, self.background_color)
+            surfel_rgb_base = empty_out["rgb"]
+            assert isinstance(surfel_rgb_base, torch.Tensor)
+            surfel_rgb = surfel_rgb_base.unsqueeze(0).to(self.device)
             if render_mode == "RGB+ED":
-                surfel_depth = (
-                    self.get_empty_outputs(width, height, self.background_color)["depth"]
-                    .unsqueeze(0)
-                    .to(self.device)
-                )
+                surfel_dpeth_base = empty_out["depth"]
+                assert isinstance(surfel_dpeth_base, torch.Tensor)
+                surfel_depth = surfel_dpeth_base.unsqueeze(0).to(self.device)
                 surfel_rgb = torch.cat([surfel_rgb, surfel_depth], dim=-1)
             surfel_alpha = torch.zeros_like(surfel_rgb[..., :1])
             surfel_info = None
@@ -687,7 +696,7 @@ class GESModel(Model):
 
     def get_gt_img(self, image: torch.Tensor):
         """
-        Compute groundtruth image with iteration dependent downscale factor for evaluation
+        Compute ground truth image with iteration dependent downscale factor for evaluation
         purpose
 
         Args:
@@ -742,11 +751,11 @@ class GESModel(Model):
     def get_outputs_for_camera(
         self, camera: Cameras, obb_box: OrientedBox | None = None
     ) -> dict[str, torch.Tensor]:
-        """Takes in a camera, generates the raybundle, and computes the output of the model.
+        """Takes in a camera, generates the ray bundle, and computes the output of the model.
         Overridden for a camera-based gaussian model.
 
         Args:
-            camera: generates raybundle
+            camera: generates ray bundle
         """
         assert camera is not None, "must provide camera to gaussian model"
         self.set_crop(obb_box)

@@ -1,72 +1,113 @@
+from pathlib import Path
+
 import numpy as np
-import zstandard as zstd
-import torch # type: ignore
-import os
-import glob
-from typing import Dict
+import torch
+from plyfile import PlyData, PlyElement
 
-def quantize_sh(sh_coeffs: np.ndarray) -> np.ndarray:
-    """Quantizes float32 spherical harmonics to float16 for storage."""
-    return sh_coeffs.astype(np.float16)
+# Paths (Adjust these as needed)
+CHECKPOINT_PATH = "outputs/chair/ges-method/YYYY-MM-DD_HHMMSS/nerfstudio_models/step-000029999.ckpt"
+OUT_DIR = Path("web_assets")
+OUT_DIR.mkdir(exist_ok=True)
 
-def pack_checkpoint(output_path: str, surfels: Dict[str, np.ndarray], gaussians: Dict[str, np.ndarray]):
-    """
-    Packs positions, rotations, scales, and SH coefficients into an interleaved binary file.
-    
-    GPU-Optimized Interleaved Layout (Per Primitive):
-    - [0:12]   Position (float32 x 3)
-    - [12:20]  Rotation (float16 x 4)  <-- Quantized
-    - [20:26]  Scale    (float16 x 3)  <-- Quantized
-    - [26:28]  Opacity  (float16 x 1)  <-- Quantized
-    - [28:...] SH Coeffs (float16 x 48) <-- Degree 3, Quantized
-    """
-    num_n = surfels['pos'].shape[0]
-    
-    # Pre-quantize all attributes
-    pos = surfels['pos'].astype(np.float32)
-    rot = surfels['rot'].astype(np.float16)
-    scale = surfels['scale'].astype(np.float16)
-    opacity = gaussians['opacity'].astype(np.float16)
-    sh = quantize_sh(surfels['sh']) # N x 48 (16 * 3)
-    
-    # Create the interleaved buffer
-    # Calculate bytes per primitive (12 + 8 + 6 + 2 + 96 = 124 bytes)
-    # Note: 124 is not power-of-2, check if alignment is needed for your shader
-    packed_data = bytearray()
-    
-    for i in range(num_n):
-        packed_data.extend(pos[i].tobytes())
-        packed_data.extend(rot[i].tobytes())
-        packed_data.extend(scale[i].tobytes())
-        packed_data.extend(opacity[i].tobytes())
-        packed_data.extend(sh[i].tobytes())
-    
-    # Compress using zstd
-    cctx = zstd.ZstdCompressor(level=3)
-    compressed = cctx.compress(packed_data)
-    
-    with open(output_path, 'wb') as f:
-        f.write(compressed)
-    print(f"Packed {num_n} primitives into {len(compressed)} bytes.")
 
-def process_all_raw_checkpoints(input_dir: str, output_dir: str):
-    """Iterates through all .raw.pt files and packs them for the web."""
-    os.makedirs(output_dir, exist_ok=True)
-    raw_files = glob.glob(os.path.join(input_dir, "*.raw.pt"))
-    
-    for raw_path in raw_files:
-        iter_num = os.path.basename(raw_path).split("_")[1].split(".")[0]
-        output_path = os.path.join(output_dir, f"iter_{iter_num}.bin")
-        
-        # state = torch.load(raw_path)
-        # pack_checkpoint(output_path, state['surfels'], state['gaussians'])
-        print(f"Packed {raw_path} -> {output_path}")
+def export_to_ply(tensor_dict, filename):
+    """Converts a dictionary of splat tensors to a standard 3DGS .ply file"""
+    if "means" not in tensor_dict or tensor_dict["means"].shape[0] == 0:
+        print(f"Skipping {filename} (0 points)")
+        return
+
+    means = tensor_dict["means"].detach().cpu().numpy()
+    scales = tensor_dict["scales"].detach().cpu().numpy()
+    quats = tensor_dict["quats"].detach().cpu().numpy()
+    opacities = tensor_dict["opacities"].detach().cpu().numpy()
+
+    # 3DGS expects spherical harmonics. We extract DC (base color) and Rest(view-dependent)
+    features_dc = tensor_dict["features_dc"].detach().cpu().numpy()
+
+    if "features_rest" in tensor_dict:
+        features_rest = tensor_dict["features_rest"].detach().cpu().numpy()
+        # Flatten the features_rest from [N, 15, 3] to [N, 45]
+        features_rest = features_rest.reshape(features_rest.shape[0], -1)
+    else:
+        features_rest = np.zeros((means.shape[0], 45))
+
+    num_pts = means.shape[0]
+
+    # Standard 3DGS PLY format arrays
+    dtype = [
+        ("x", "f4"),
+        ("y", "f4"),
+        ("z", "f4"),
+        ("nx", "f4"),
+        ("ny", "f4"),
+        ("nz", "f4"),
+        ("f_dc_0", "f4"),
+        ("f_dc_1", "f4"),
+        ("f_dc_2", "f4"),
+    ]
+
+    for i in range(features_rest.shape[1]):
+        dtype.append((f"f_rest_{i}", "f4"))
+
+    dtype.extend(
+        [
+            ("opacity", "f4"),
+            ("scale_0", "f4"),
+            ("scale_1", "f4"),
+            ("scale_2", "f4"),
+            ("rot_0", "f4"),
+            ("rot_1", "f4"),
+            ("rot_2", "f4"),
+            ("rot_3", "f4"),
+        ]
+    )
+
+    elements = np.empty(num_pts, dtype=dtype)
+    elements["x"], elements["y"], elements["z"] = means.T
+    elements["nx"], elements["ny"], elements["nz"] = np.zeros_like(means).T
+    elements["f_dc_0"], elements["f_dc_1"], elements["f_dc_2"] = features_dc.T
+
+    if features_rest.shape[1] > 0:
+        for i in range(features_rest.shape[1]):
+            elements[f"f_rest_{i}"] = features_rest[:, i]
+
+    elements["opacity"] = opacities.squeeze()
+    elements["scale_0"], elements["scale_1"], elements["scale_2"] = scales.T
+    elements["rot_0"], elements["rot_1"], elements["rot_2"], elements["rot_3"] = quats.T
+
+    el = PlyElement.describe(elements, "vertex")
+    PlyData([el]).write(filename)
+    print(f"Saved {num_pts} points to {filename}")
+
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, required=True)
-    parser.add_argument('--output', type=str, required=True)
-    args = parser.parse_args()
-    
-    process_all_raw_checkpoints(args.input, args.output)
+    print(f"Loading checkpoint: {CHECKPOINT_PATH}")
+    # Load the checkpoint (map_location='cpu' so we can run this anywhere)
+    ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu")
+
+    # Nerfstudio wraps the model inside "pipeline" -> "_model"
+    model_state = ckpt["pipeline"]
+
+    # Extract Surfel Parameters
+    surfels = {
+        "means": model_state["_model.surfel.means"],
+        "quats": model_state["_model.surfel.quats"],
+        "scales": model_state["_model.surfel.scales"],
+        "opacities": model_state["_model.surfel.opacities"],
+        "features_dc": model_state["_model.surfel.features_dc"],
+        "features_rest": model_state.get("_model.surfel.features_rest"),
+    }
+
+    # Extract Gaussian Parameters
+    gaussians = {
+        "means": model_state["_model.gaussian.means"],
+        "quats": model_state["_model.gaussian.quats"],
+        "scales": model_state["_model.gaussian.scales"],
+        "opacities": model_state["_model.gaussian.opacities"],
+        "features_dc": model_state["_model.gaussian.features_dc"],
+        "features_rest": model_state.get("_model.gaussian.features_rest"),
+    }
+
+    export_to_ply(surfels, OUT_DIR / "surfels.ply")
+    export_to_ply(gaussians, OUT_DIR / "gaussians.ply")
+    print("Done! Ready for Spark.")

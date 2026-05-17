@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GES Viewer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+
+        #viewer {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h2>Gaussian-Surfel Model Viewer</h2>
+        <div style="margin-bottom: 10px;">
+        <label style="font-weight: bold; color: #4CAF50;">1. Load Surfels(.ply)</label><br>
+            <input type="file" id="surfelInput" accept=".ply">
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <label style="font-weight: bold; color: #2196F3;">2. Load Gaussians(.ply)</label><br>
+            <input type="file" id="gaussianInput" accept=".ply">
+        </div>
+        <hr style="border-color: #444;">
+        <label>Surfel Depth Offset(&delta;):
+            <span id="deltaValue">0.5</span>
+        </label><br>
+        <input type="range" id="deltaSlider" min="-100.0" max="5000.0" step="0.1" value="0.5"><br><br>
+        <hr style="border-color: #444;">
+        <label><input type="checkbox" id="toggleSurfels" checked> Show Surfels (Module A)</label><br>
+        <label><input type="checkbox" id="toggleGaussians" checked> Show Gaussians (Module A)</label><br>
+        <label><input type="checkbox" id="toggleDepthTest" checked> Enable Gaussian Depth Culling</label><br>
+    </div>
+    <script type="module" src="./ges_viewer.ts"></script>
+</body>
+</html>

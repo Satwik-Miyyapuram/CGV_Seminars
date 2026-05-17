@@ -121,22 +121,26 @@ class GESStrategy(Strategy):
         )
         optimizers = model.get_densification_optimizers(step)
         state = model.strategy_state[target_name]
-        info = model.info[target_name]
+        info = model.info.get(target_name)
 
+        if info is None or optimizers is None:
+            return
         self._update_state(params, state, info)
 
         mutated = False
 
         if step >= self.refine_start_iter and step % self.refine_every == 0:
-            n_dupli, n_split = self._grow_gs(params, optimizers, state, step)
+            num_duplicates, n_split = self._grow_gs(params, optimizers, state, step)
             if self.verbose:
                 print(
-                    f"Step {step}: {n_dupli} GSs duplicated, {n_split} GSs split. "
+                    f"Step {step}: {num_duplicates} GSs duplicated, {n_split} GSs split. "
                     f"Now having {len(params['means'])} GSs."
                 )
-            n_prune = self._prune_gs(params, optimizers, state, step)
+            num_prune = self._prune_gs(params, optimizers, state, step)
             if self.verbose:
-                print(f"Step {step}: {n_prune} GSs pruned. Now having {len(params['means'])} GSs.")
+                print(
+                    f"Step {step}: {num_prune} GSs pruned. Now having {len(params['means'])} GSs."
+                )
 
             state["grad2d"].zero_()
             state["count"].zero_()
@@ -184,8 +188,8 @@ class GESStrategy(Strategy):
             torch.exp(params["scales"]).max(dim=-1).values
             <= self.grow_scale3d * state["scene_scale"]
         )
-        is_dupli = is_grad_high & is_small
-        n_dupli = is_dupli.sum().item()
+        is_duplicate = is_grad_high & is_small
+        num_duplicates = is_duplicate.sum().item()
 
         # is_large = ~is_small
         is_split = is_grad_high & ~is_small
@@ -193,11 +197,11 @@ class GESStrategy(Strategy):
         # it has bugs
         n_split = is_split.sum().item()
 
-        if n_dupli > 0:
-            duplicate(params, optimizers, state, is_dupli)
+        if num_duplicates > 0:
+            duplicate(params, optimizers, state, is_duplicate)
 
         is_split = torch.cat(
-            [is_split, torch.zeros(n_dupli, device=grads.device, dtype=torch.bool)]
+            [is_split, torch.zeros(num_duplicates, device=grads.device, dtype=torch.bool)]
         )
         if n_split > 0:
             split(
@@ -208,7 +212,7 @@ class GESStrategy(Strategy):
                 revised_opacity=False,
             )
 
-        return n_dupli, n_split
+        return num_duplicates, n_split
 
     @torch.no_grad()
     def _prune_gs(
@@ -225,11 +229,11 @@ class GESStrategy(Strategy):
                 > self.prune_scale3d * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big
-        n_prune = is_prune.sum().item()
-        if n_prune > 0:
+        num_prune = is_prune.sum().item()
+        if num_prune > 0:
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
 
-        return n_prune
+        return num_prune
 
     def execute_discard_phase(self, model, keep_mask: torch.Tensor):
         """
