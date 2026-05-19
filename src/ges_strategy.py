@@ -62,6 +62,24 @@ class GESStrategy(Strategy):
         }
         return state
 
+    def _clean_optimizer_states(self, model: GESModel):
+        """Clean up all optimizer states to remove any stale parameter entries."""
+        for opt_name, optimizer in model.optimizers.items():
+            # Build set of parameter IDs currently in param_groups
+            valid_ids = set()
+            for param_group in optimizer.param_groups:
+                for param in param_group.get("params", []):
+                    valid_ids.add(id(param))
+            
+            # Remove stale state entries (keys must be Tensors whose id is not in valid_ids)
+            stale_keys = [
+                k 
+                for k in optimizer.state.keys() 
+                if isinstance(k, torch.Tensor) and id(k) not in valid_ids
+            ]
+            for k in stale_keys:
+                del optimizer.state[k]
+
     def step_pre_backward(self, model: GESModel, step: int):
         """Operations to be performed before the `loss.backward()` call."""
         if step <= self.surfel_density_stop_iter:
@@ -185,18 +203,7 @@ class GESStrategy(Strategy):
             ]
             
             # Clean up optimizer states to remove any stale entries
-            for opt_name, optimizer in model.optimizers.items():
-                if prefix.rstrip("_") in opt_name:
-                    # Build set of parameter IDs currently in param_groups
-                    valid_ids = set()
-                    for param_group in optimizer.param_groups:
-                        for param in param_group.get("params", []):
-                            valid_ids.add(id(param))
-                    
-                    # Remove stale state entries
-                    stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
-                    for param_id in stale_ids:
-                        del optimizer.state[param_id]
+            self._clean_optimizer_states(model)
 
     @torch.no_grad()
     def _grow_gs(
@@ -295,18 +302,7 @@ class GESStrategy(Strategy):
         ]
         
         # Clean up optimizer states to remove any stale entries
-        for opt_name, optimizer in model.optimizers.items():
-            if "surfel" in opt_name:
-                # Build set of parameter IDs currently in param_groups
-                valid_ids = set()
-                for param_group in optimizer.param_groups:
-                    for param in param_group.get("params", []):
-                        valid_ids.add(id(param))
-                
-                # Remove stale state entries
-                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
-                for param_id in stale_ids:
-                    del optimizer.state[param_id]
+        self._clean_optimizer_states(model)
         
         print(
             f"Discarded surfels based on the keep_mask at iteration {model.step}. \
@@ -367,18 +363,7 @@ class GESStrategy(Strategy):
         ]
         
         # Clean up optimizer states to remove any stale entries
-        for opt_name, optimizer in model.optimizers.items():
-            if "surfel" in opt_name:
-                # Build set of parameter IDs currently in param_groups
-                valid_ids = set()
-                for param_group in optimizer.param_groups:
-                    for param in param_group.get("params", []):
-                        valid_ids.add(id(param))
-                
-                # Remove stale state entries
-                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
-                for param_id in stale_ids:
-                    del optimizer.state[param_id]
+        self._clean_optimizer_states(model)
         
         print(
             f"Pruned surfels based on visibility at iteration {model.step}. Now having \
@@ -466,18 +451,7 @@ class GESStrategy(Strategy):
         ]
         
         # Clean up optimizer states to remove any stale entries
-        for opt_name, optimizer in model.optimizers.items():
-            if "gaussian" in opt_name:
-                # Build set of parameter IDs currently in param_groups
-                valid_ids = set()
-                for param_group in optimizer.param_groups:
-                    for param in param_group.get("params", []):
-                        valid_ids.add(id(param))
-                
-                # Remove stale state entries
-                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
-                for param_id in stale_ids:
-                    del optimizer.state[param_id]
+        self._clean_optimizer_states(model)
         
         print(
             f"Spawned {num_new_gaussians} new gaussians from saved seeds at iteration {model.step}."

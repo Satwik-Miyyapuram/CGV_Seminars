@@ -620,8 +620,8 @@ class GESModel(Model):
             fx, fy = intrinsic_mat[0, 0, 0], intrinsic_mat[0, 1, 1]
             cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
 
-            x_screen = (gaussian_crop.means[..., 0] * fx) / (gaussian_depths + 1e-5) + cx
-            y_screen = (gaussian_crop.means[..., 1] * fy) / (gaussian_depths + 1e-5) + cy
+            x_screen = (cam_space_means[..., 0] * fx) / (gaussian_depths + 1e-5) + cx
+            y_screen = (cam_space_means[..., 1] * fy) / (gaussian_depths + 1e-5) + cy
 
             x_norm = (x_screen / width) * 2.0 - 1.0
             y_norm = (y_screen / height) * 2.0 - 1.0
@@ -713,10 +713,8 @@ class GESModel(Model):
         C_G = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
 
-        rgb = (C_S + C_G) / (W_S + W_G + 1e-5)
-
         final_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
-        rgb = rgb + (1 - final_alpha) * background_color
+        rgb = (C_S + C_G) / (W_S + W_G + 1e-5) * final_alpha + (1 - final_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
 
         if render_mode == "RGB+ED":
