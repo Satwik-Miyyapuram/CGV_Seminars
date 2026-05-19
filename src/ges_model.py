@@ -167,15 +167,16 @@ class GESModel(Model):
         else:
             self.surfel.features_dc = Parameter(torch.rand((num_points, 3)))
             self.surfel.features_rest = Parameter(torch.rand((num_points, dim_sh - 1, 3)))
-            # Skeletons for Gaussian parameters (3D)
-            self.gaussian = Gaussian(
-                means=Parameter(torch.empty((0, 3))),
-                quats=Parameter(torch.empty((0, 4))),
-                scales=Parameter(torch.empty((0, 3))),
-                opacities=Parameter(torch.empty((0, 1))),
-                features_dc=Parameter(torch.empty((0, 3))),
-                features_rest=Parameter(torch.empty((0, dim_sh - 1, 3))),
-            )
+
+        # Skeletons for Gaussian parameters (3D) must always be initialized on the proper device
+        self.gaussian = Gaussian(
+            means=Parameter(torch.empty((0, 3), device=self.device)),
+            quats=Parameter(torch.empty((0, 4), device=self.device)),
+            scales=Parameter(torch.empty((0, 3), device=self.device)),
+            opacities=Parameter(torch.empty((0, 1), device=self.device)),
+            features_dc=Parameter(torch.empty((0, 3), device=self.device)),
+            features_rest=Parameter(torch.empty((0, dim_sh - 1, 3), device=self.device)),
+        )
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
@@ -582,7 +583,7 @@ class GESModel(Model):
             surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_2dgs(
                 means=surfel_crop.means,
                 quats=surfel_crop.quats,
-                scales=surfel_crop.scales,
+                scales=torch.exp(surfel_crop.scales),
                 opacities=opacities,
                 colors=surfel_color_crop,
                 viewmats=viewmat,
@@ -668,7 +669,7 @@ class GESModel(Model):
             gaussian_render, gaussian_alpha, gaussian_info = rasterization(
                 means=gaussian_crop.means,
                 quats=gaussian_crop.quats,
-                scales=gaussian_crop.scales,
+                scales=torch.exp(gaussian_crop.scales),
                 opacities=opacities,
                 colors=gaussian_color_crop,
                 viewmats=viewmat,

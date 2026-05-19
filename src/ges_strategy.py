@@ -416,8 +416,8 @@ class GESStrategy(Strategy):
             "opacities": torch.logit(
                 0.5 * torch.ones((num_new_gaussians, 1), device=device)
             ),  # Initialize opacities to medium value (0.5 in probability space)
-            "features_dc": surfel_features_dc_mean.expand(num_new_gaussians, -1),  # Inherit surfel colors
-            "features_rest": surfel_features_rest_mean.expand(num_new_gaussians, -1, -1),  # Inherit surfel SH
+            "features_dc": surfel_features_dc_mean.expand(num_new_gaussians, -1).clone(),  # Inherit surfel colors
+            "features_rest": surfel_features_rest_mean.expand(num_new_gaussians, -1, -1).clone(),  # Inherit surfel SH
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
@@ -427,7 +427,14 @@ class GESStrategy(Strategy):
             return torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)
 
         params = model.get_gaussian_param_dict()
-        optimizers = model.get_densification_optimizers(model.step)
+        optimizers = {
+            "means": model.optimizers["gaussian_means"],
+            "quats": model.optimizers["gaussian_quats"],
+            "scales": model.optimizers["gaussian_scales"],
+            "opacities": model.optimizers["gaussian_opacities"],
+            "features_dc": model.optimizers["gaussian_features_dc"],
+            "features_rest": model.optimizers["gaussian_features_rest"],
+        }
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
         
         # Update model attributes and optimizer param groups
