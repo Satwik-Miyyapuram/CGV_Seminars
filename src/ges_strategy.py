@@ -159,8 +159,8 @@ class GESStrategy(Strategy):
             torch.cuda.empty_cache()
             mutated = True
 
-        if step % self.reset_every == 0 and step > 0:
-            reset_opa(params, optimizers, state, value=self.prune_opa * 2.0)
+        # if step % self.reset_every == 0 and step > 0:
+        #     reset_opa(params, optimizers, state, value=self.prune_opa * 2.0)
 
         if mutated:
             target_obj = model.surfel if is_surfel_phase else model.gaussian
@@ -396,14 +396,6 @@ class GESStrategy(Strategy):
         model.surfel.opacities.requires_grad_(False)
         if model.surfel.opacities.grad is not None:
             model.surfel.opacities.grad = None
-        # Remove from optimizer param groups and state
-        for opt_name, optimizer in model.optimizers.items():
-            if opt_name == "surfel_opacities":
-                optimizer.param_groups[0]["params"] = []
-                # Clear state for this parameter
-                param_id = id(model.surfel.opacities)
-                if param_id in optimizer.state:
-                    del optimizer.state[param_id]
 
     def freeze_surfel_geometry(self, model):
         """Callback function to be executed at the 20k iteration to freeze the surfel geometry."""

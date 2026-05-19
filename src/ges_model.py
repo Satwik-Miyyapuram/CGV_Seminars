@@ -627,7 +627,14 @@ class GESModel(Model):
             y_norm = (y_screen / height) * 2.0 - 1.0
             grid = torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)  # [1, 1, N, 2]
 
-            surfel_depth_map = surfel_depth.permute(2, 0, 1).unsqueeze(0)  # [1, 1, H, W]
+            # Surfel depth may already carry a batch dimension depending on the renderer path.
+            # Normalize it to [B, 1, H, W] before grid sampling.
+            if surfel_depth.dim() == 4:
+                surfel_depth_map = surfel_depth.permute(0, 3, 1, 2)
+            elif surfel_depth.dim() == 3:
+                surfel_depth_map = surfel_depth.permute(2, 0, 1).unsqueeze(0)
+            else:
+                raise RuntimeError(f"Unexpected surfel_depth shape: {tuple(surfel_depth.shape)}")
             sampled_depths = torch.nn.functional.grid_sample(
                 surfel_depth_map, grid, mode="nearest", padding_mode="border", align_corners=False
             ).squeeze()  # [N]
