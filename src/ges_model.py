@@ -41,6 +41,10 @@ class GESModelConfig(SplatfactoModelConfig):
     _target: type = field(default_factory=lambda: GESModel)
     output_depth_during_training: bool = True  # since we need surfel depth to cull gaussians during
     # rendering, we need to output depth during training as well.
+    use_dynamic_epsilon: bool = True  # Use dynamic epsilon for depth offset based on Gaussian scales
+    surfel_visibility_threshold_real: int = 16  # Threshold for surfel visibility pruning (real scenes)
+    surfel_visibility_threshold_synthetic: int = 4  # Threshold for surfel visibility pruning (synthetic scenes)
+    use_real_scene: bool = True  # Whether to use real scene visibility threshold
 
 
 class Surfel(torch.nn.Module):
@@ -158,6 +162,8 @@ class GESModel(Model):
                 shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
             self.surfel.features_dc = Parameter(shs[:, 0, :])
             self.surfel.features_rest = Parameter(shs[:, 1:, :])
+            print(f"[INIT] Surfel features_dc range: [{shs[:, 0, :].min().item():.4f}, {shs[:, 0, :].max().item():.4f}]")
+            print(f"[INIT] Surfel seed colors range: [{self.seed_points[1].min().item():.1f}, {self.seed_points[1].max().item():.1f}]")
         else:
             self.surfel.features_dc = Parameter(torch.rand((num_points, 3)))
             self.surfel.features_rest = Parameter(torch.rand((num_points, dim_sh - 1, 3)))
@@ -187,7 +193,11 @@ class GESModel(Model):
             # This would only affect the background color when rendering.
         else:
             self.background_color = get_color(self.config.background_color)
-        self.strategy = GESStrategy()
+        self.strategy = GESStrategy(
+            surfel_visibility_threshold_real=self.config.surfel_visibility_threshold_real,
+            surfel_visibility_threshold_synthetic=self.config.surfel_visibility_threshold_synthetic,
+            use_real_scene=self.config.use_real_scene,
+        )
         self.strategy_state = self.strategy.initialize_state()
 
     def get_param_groups(self) -> dict[str, list[Parameter]]:
@@ -275,7 +285,7 @@ class GESModel(Model):
 
     def get_densification_optimizers(self, step) -> dict[str, torch.optim.Optimizer] | None:
         """Get the optimizers to be used for densification based on the current step."""
-        if step <= 10000:
+        if step <= 20000:  # Surfel phase: densification through step 20k geometry freeze
             return {
                 "means": self.optimizers["surfel_means"],
                 "quats": self.optimizers["surfel_quats"],
@@ -321,13 +331,14 @@ class GESModel(Model):
                 print(f"Reached {step} iterations, entering discard phase...")
                 opacities = torch.sigmoid(self.surfel.opacities.detach())
                 # Squeeze might make it scalar if there's 1 point, so we reshape to 1D
-                # Lowering threshold so we get a meaningful split to spawn gaussians
-                mask = (opacities >= 0.6).view(-1)
+                # Keep only high-confidence surfels (opacity >= 0.8), discard low-opacity ones as Gaussian seeds
+                # This follows the paper: discard surfels with w_i < 0.8
+                mask = (opacities >= 0.8).view(-1)
 
                 # If the threshold drops everything, we need to keep at least a few points to prevent a crash downstream
                 if mask.sum() == 0:
                     print(
-                        "Warning: Opacity threshold 0.5 discarded all points! Falling back to discarding nothing for stability."
+                        "Warning: Opacity threshold 0.8 discarded all points! Falling back to discarding nothing for stability."
                     )
                     mask = torch.ones_like(mask)
 
@@ -337,8 +348,12 @@ class GESModel(Model):
                 print(
                     f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels."
                 )
+                print(f"[10K] Surfel features_dc range after discard: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]")
                 self.strategy.execute_discard_phase(self, mask)
                 self.strategy.clamp_surfel_opacity(self, min_opacity=30.0)
+                # Freeze surfel opacity from further optimization (paper: "keep w_i from optimization")
+                self.strategy.freeze_surfel_opacity(self)
+                print("Frozen surfel opacity from optimization.")
 
         def phase_15k_callback(step: int):
             if step == 15000:
@@ -357,10 +372,10 @@ class GESModel(Model):
             if step == self.strategy.gaussian_spawn_iter:
                 print("Reached 20k iterations, solidifying surfels and spawning gaussians...")
                 self.strategy.clamp_surfel_opacity(self, min_opacity=255.0)
-                assert isinstance(self.saved_gaussian_seeds, torch.Tensor), (
-                    "Saved gaussian seeds not found. Make sure the discard phase is correctly saving the discarded surfel means."
-                )
-                self.strategy.spawn_gaussians_from_saved_seeds(self, self.saved_gaussian_seeds)
+                if isinstance(self.saved_gaussian_seeds, torch.Tensor):
+                    self.strategy.spawn_gaussians_from_saved_seeds(self, self.saved_gaussian_seeds)
+                else:
+                    print("Warning: Saved gaussian seeds not found or invalid. Skipping Gaussian spawning.")
                 self.strategy.freeze_surfel_geometry(self)
 
         def pre_backward_callback(step: int):
@@ -473,6 +488,13 @@ class GESModel(Model):
         if not isinstance(camera, Cameras):
             print("Called get_outputs with not a camera")
             return {}
+        
+        # Log surfel and Gaussian counts (helpful for debugging eval)
+        if not self.training:
+            print(f"[EVAL] Rendering with {self.surfel.means.shape[0]} surfels and {self.gaussian.means.shape[0]} Gaussians at step {self.step}")
+            print(f"[EVAL] Surfel features_dc range: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]")
+            if self.gaussian.means.shape[0] > 0:
+                print(f"[EVAL] Gaussian features_dc range: [{self.gaussian.features_dc.min().item():.4f}, {self.gaussian.features_dc.max().item():.4f}]")
 
         if self.training:
             assert camera.shape[0] == 1, "Only one camera at a time"
@@ -609,7 +631,17 @@ class GESModel(Model):
             sampled_depths = torch.nn.functional.grid_sample(
                 surfel_depth_map, grid, mode="nearest", padding_mode="border", align_corners=False
             ).squeeze()  # [N]
-            delta = 0.05  # depth offset from surfel to cull gaussian
+            
+            # Compute dynamic epsilon based on Gaussian scales (as per paper Eq. 2-3)
+            # ε_i = (1/D) * Σ(s_{i,j}) where D=3 (dimension) and s_{i,j} are axis lengths of scale
+            with torch.no_grad():
+                if self.config.use_dynamic_epsilon:
+                    # Scales are stored in log space, so exponentiate them
+                    scale_magnitudes = torch.exp(gaussian_crop.scales.detach())  # [N, 3]
+                    # Average the three axis lengths for each Gaussian
+                    delta = scale_magnitudes.mean(dim=1)  # [N]
+                else:
+                    delta = 0.05 * torch.ones(gaussian_crop.means.shape[0], device=gaussian_depths.device)
 
             valid_mask = gaussian_depths < sampled_depths + delta
 
@@ -689,6 +721,28 @@ class GESModel(Model):
             depth = None
         if background_color.shape[0] == 3 and not self.training:
             background_color = background_color.expand(height, width, 3)
+        
+        # Add annotation text during evaluation
+        if not self.training:
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                import numpy as np
+                
+                # Convert tensor to PIL Image
+                rgb_np = (rgb.detach().cpu().numpy() * 255).astype(np.uint8)
+                img = Image.fromarray(rgb_np)
+                draw = ImageDraw.Draw(img)
+                
+                # Add text label
+                text = f"Render (Surfels: {self.surfel.means.shape[0]}, Gaussians: {self.gaussian.means.shape[0]})"
+                draw.text((10, 10), text, fill=(255, 255, 255))
+                
+                # Convert back to tensor
+                rgb = torch.from_numpy(np.array(img).astype(np.float32) / 255.0).to(rgb.device)
+            except Exception as e:
+                # If text rendering fails, just continue without annotation
+                print(f"Warning: Could not add text annotation: {e}")
+        
         return {
             "rgb": rgb,
             "depth": depth,  # type: ignore

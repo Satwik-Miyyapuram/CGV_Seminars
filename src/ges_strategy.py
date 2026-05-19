@@ -36,6 +36,11 @@ class GESStrategy(Strategy):
     surfel_density_stop_iter: int = 10000
     surfel_prune_iter: int = 15000
     gaussian_spawn_iter: int = 20000
+    
+    # Dynamic culling parameters
+    surfel_visibility_threshold_real: float = 16.0  # Pixel threshold for real scenes
+    surfel_visibility_threshold_synthetic: float = 4.0  # Pixel threshold for synthetic scenes
+    use_real_scene: bool = True  # Whether using real scene threshold
 
     def initialize_state(self, scene_scale: float = 1.0) -> dict[str, Any]:
         """Initialize the strategy state."""
@@ -136,15 +141,16 @@ class GESStrategy(Strategy):
 
         if step >= self.refine_start_iter and step % self.refine_every == 0:
             num_duplicates, n_split = self._grow_gs(params, optimizers, state, step)
-            if self.verbose:
+            target_type = "Surfels" if is_surfel_phase else "Gaussians"
+            if self.verbose or is_surfel_phase:  # Always log surfel densification
                 print(
-                    f"Step {step}: {num_duplicates} GSs duplicated, {n_split} GSs split. "
-                    f"Now having {len(params['means'])} GSs."
+                    f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
+                    f"Now having {len(params['means'])} {target_type}."
                 )
             num_prune = self._prune_gs(params, optimizers, state, step)
-            if self.verbose:
+            if self.verbose or is_surfel_phase:  # Always log surfel pruning
                 print(
-                    f"Step {step}: {num_prune} GSs pruned. Now having {len(params['means'])} GSs."
+                    f"Step {step}: {num_prune} {target_type} pruned. Now having {len(params['means'])} {target_type}."
                 )
 
             state["grad2d"].zero_()
@@ -177,6 +183,20 @@ class GESStrategy(Strategy):
             model.optimizers[prefix + "features_rest"].param_groups[0]["params"] = [
                 target_obj.features_rest
             ]
+            
+            # Clean up optimizer states to remove any stale entries
+            for opt_name, optimizer in model.optimizers.items():
+                if prefix.rstrip("_") in opt_name:
+                    # Build set of parameter IDs currently in param_groups
+                    valid_ids = set()
+                    for param_group in optimizer.param_groups:
+                        for param in param_group.get("params", []):
+                            valid_ids.add(id(param))
+                    
+                    # Remove stale state entries
+                    stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
+                    for param_id in stale_ids:
+                        del optimizer.state[param_id]
 
     @torch.no_grad()
     def _grow_gs(
@@ -255,6 +275,8 @@ class GESStrategy(Strategy):
         params = model.get_surfel_param_dict()
         optimizers = model.get_densification_optimizers(self.surfel_density_stop_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+        
+        # Update model attributes and optimizer param groups
         model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
         model.surfel.quats = params["quats"]
@@ -271,6 +293,21 @@ class GESStrategy(Strategy):
         model.optimizers["surfel_features_rest"].param_groups[0]["params"] = [
             model.surfel.features_rest
         ]
+        
+        # Clean up optimizer states to remove any stale entries
+        for opt_name, optimizer in model.optimizers.items():
+            if "surfel" in opt_name:
+                # Build set of parameter IDs currently in param_groups
+                valid_ids = set()
+                for param_group in optimizer.param_groups:
+                    for param in param_group.get("params", []):
+                        valid_ids.add(id(param))
+                
+                # Remove stale state entries
+                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
+                for param_id in stale_ids:
+                    del optimizer.state[param_id]
+        
         print(
             f"Discarded surfels based on the keep_mask at iteration {model.step}. \
             Now having {model.surfel.means.shape[0]} surfels."
@@ -279,18 +316,24 @@ class GESStrategy(Strategy):
     def execute_visibility_prune_phase(self, model):
         """
         Callback function to be executed at the 15k iteration to prune the points based on
-        visibility.
+        visibility. Implements the dynamic culling algorithm from the GES paper:
+        - Compute pixel coverage for each surfel (approximated using 2D radius and opacity)
+        - Coverage is π * radius² * opacity
+        - Prune surfels with coverage < n_threshold
         """
-        # we will  approximate the visibility since we cannot exactly follow the paper's approach as
-        # gsplat uses alpha blending instead of a z buffer for rendering.
-        # we approx the cover using radii and opacity,
-        n_threshold = 16.0
+        # Select threshold based on scene type
+        n_threshold = self.surfel_visibility_threshold_real if self.use_real_scene else self.surfel_visibility_threshold_synthetic
+        
         max_2d_radius = model.strategy_state["surfels"]["radii"].detach()
         opacities = torch.sigmoid(model.surfel.opacities.detach()).squeeze()
+        
+        # Dynamic culling: approximate pixel coverage for each surfel
+        # Coverage approximation: π * max_2d_radius² * opacity
         approx_cover = (3.14159 * max_2d_radius**2) * opacities
         visibility_mask = approx_cover > n_threshold
         num_pruned = torch.sum(~visibility_mask).item()
-        print(f"Pruning {num_pruned} surfels based on visibility at iteration {model.step}.")
+        print(f"Pruning {num_pruned} surfels based on visibility at iteration {model.step}. "
+              f"(threshold: {n_threshold:.1f}, scene: {'real' if self.use_real_scene else 'synthetic'})")
         if num_pruned == 0:
             print("No surfels pruned based on visibility.")
             return
@@ -304,6 +347,8 @@ class GESStrategy(Strategy):
         params = model.get_surfel_param_dict()
         optimizers = model.get_densification_optimizers(self.surfel_prune_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+        
+        # Update model attributes and optimizer param groups
         model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
         model.surfel.quats = params["quats"]
@@ -320,6 +365,21 @@ class GESStrategy(Strategy):
         model.optimizers["surfel_features_rest"].param_groups[0]["params"] = [
             model.surfel.features_rest
         ]
+        
+        # Clean up optimizer states to remove any stale entries
+        for opt_name, optimizer in model.optimizers.items():
+            if "surfel" in opt_name:
+                # Build set of parameter IDs currently in param_groups
+                valid_ids = set()
+                for param_group in optimizer.param_groups:
+                    for param in param_group.get("params", []):
+                        valid_ids.add(id(param))
+                
+                # Remove stale state entries
+                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
+                for param_id in stale_ids:
+                    del optimizer.state[param_id]
+        
         print(
             f"Pruned surfels based on visibility at iteration {model.step}. Now having \
             {model.surfel.means.shape[0]} surfels."
@@ -330,6 +390,20 @@ class GESStrategy(Strategy):
         target_prob = min(min_opacity / 255.0, 0.9999)
         target_logit = torch.logit(torch.tensor(target_prob, device=model.device))
         model.surfel.opacities.data = torch.clamp_min(model.surfel.opacities.data, target_logit)
+
+    def freeze_surfel_opacity(self, model):
+        """Freeze surfel opacity from further optimization (paper: 'keep w_i from optimization' after 10K)."""
+        model.surfel.opacities.requires_grad_(False)
+        if model.surfel.opacities.grad is not None:
+            model.surfel.opacities.grad = None
+        # Remove from optimizer param groups and state
+        for opt_name, optimizer in model.optimizers.items():
+            if opt_name == "surfel_opacities":
+                optimizer.param_groups[0]["params"] = []
+                # Clear state for this parameter
+                param_id = id(model.surfel.opacities)
+                if param_id in optimizer.state:
+                    del optimizer.state[param_id]
 
     def freeze_surfel_geometry(self, model):
         """Callback function to be executed at the 20k iteration to freeze the surfel geometry."""
@@ -343,22 +417,30 @@ class GESStrategy(Strategy):
         saved seeds.
         """
         num_new_gaussians = saved_gaussian_seeds.shape[0]
+        
+        # Skip if no seeds to spawn from
+        if num_new_gaussians == 0:
+            print("No Gaussian seeds to spawn from (all surfels were kept). Skipping Gaussian spawning.")
+            return
+        
         device = model.device
+        
+        # Find closest surfel for each seed to inherit features (colors)
+        # For now, initialize with surfel SH features at similar positions
+        # Since we don't have exact position mapping, use mean surfel features as initialization
+        surfel_features_dc_mean = model.surfel.features_dc.detach().mean(dim=0, keepdim=True)
+        surfel_features_rest_mean = model.surfel.features_rest.detach().mean(dim=0, keepdim=True)
 
         new_data = {
             "means": saved_gaussian_seeds.clone(),
             "quats": random_quat_tensor(num_new_gaussians).to(device),
             "scales": torch.ones((num_new_gaussians, 3), device=device)
-            * -2.0,  # Initialize scales to a small value (log scale)
+            * -1.0,  # Initialize scales larger than before (log scale)
             "opacities": torch.logit(
-                0.1 * torch.ones((num_new_gaussians, 1), device=device)
-            ),  # Initialize opacities to a low value
-            "features_dc": torch.zeros(
-                (num_new_gaussians, 3), device=device
-            ),  # Initialize DC features to zero
-            "features_rest": torch.zeros(
-                (num_new_gaussians, num_sh_bases(model.config.sh_degree) - 1, 3), device=device
-            ),  # Initialize SH features to zero
+                0.5 * torch.ones((num_new_gaussians, 1), device=device)
+            ),  # Initialize opacities to medium value (0.5 in probability space)
+            "features_dc": surfel_features_dc_mean.expand(num_new_gaussians, -1),  # Inherit surfel colors
+            "features_rest": surfel_features_rest_mean.expand(num_new_gaussians, -1, -1),  # Inherit surfel SH
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
@@ -370,6 +452,8 @@ class GESStrategy(Strategy):
         params = model.get_gaussian_param_dict()
         optimizers = model.get_densification_optimizers(model.step)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+        
+        # Update model attributes and optimizer param groups
         model.gaussian.means = params["means"]
         model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
         model.gaussian.quats = params["quats"]
@@ -388,6 +472,21 @@ class GESStrategy(Strategy):
         model.optimizers["gaussian_features_rest"].param_groups[0]["params"] = [
             model.gaussian.features_rest
         ]
+        
+        # Clean up optimizer states to remove any stale entries
+        for opt_name, optimizer in model.optimizers.items():
+            if "gaussian" in opt_name:
+                # Build set of parameter IDs currently in param_groups
+                valid_ids = set()
+                for param_group in optimizer.param_groups:
+                    for param in param_group.get("params", []):
+                        valid_ids.add(id(param))
+                
+                # Remove stale state entries
+                stale_ids = [param_id for param_id in optimizer.state.keys() if id(param_id) not in valid_ids]
+                for param_id in stale_ids:
+                    del optimizer.state[param_id]
+        
         print(
             f"Spawned {num_new_gaussians} new gaussians from saved seeds at iteration {model.step}."
         )
