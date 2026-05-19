@@ -375,13 +375,13 @@ class GESModel(Model):
                 torch.save(self.state_dict(), filename)
                 print(f"Saved model state at milestone iteration {step} to {filename}")
 
-        callbacks.append(
-            TrainingCallback(
-                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                update_every_num_iters=1,
-                func=pre_backward_callback,
-            )
-        )
+        # callbacks.append(
+        #     TrainingCallback(
+        #         where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+        #         update_every_num_iters=1,
+        #         func=pre_backward_callback,
+        #     )
+        # )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],

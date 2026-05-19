@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -76,11 +77,11 @@ class GESStrategy(Strategy):
         n_items = len(list(params.values())[0])
 
         if state["grad2d"] is None:
-            state["grad2d"] = torch.zeros(n_items, device=grads.device)
+            state["grad2d"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
         if state["count"] is None:
-            state["count"] = torch.zeros(n_items, device=grads.device)
+            state["count"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
         if state["radii"] is None:
-            state["radii"] = torch.zeros(n_items, device=grads.device)
+            state["radii"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
 
         sel = (info["radii"] > 0.0).all(dim=-1)  # [C, N]
         gs_ids = torch.where(sel)[1]  # [nnz]
@@ -90,10 +91,14 @@ class GESStrategy(Strategy):
         state["grad2d"].index_add_(0, gs_ids, grads.norm(dim=-1))
         state["count"].index_add_(0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float32))
 
+        # ensure radii buffer is float so the indexed assignment matches dtypes
+        if state["radii"].dtype != torch.float32:
+            state["radii"] = state["radii"].to(dtype=torch.float32, device=grads.device)
+
         state["radii"][gs_ids] = torch.maximum(
             state["radii"][gs_ids],
             # normalize radii to [0, 1] screen space
-            radii / float(max(info["width"], info["height"])),
+            (radii / float(max(info["width"], info["height"]))).to(device=grads.device, dtype=torch.float32),
         )
 
     def step_post_backward(self, model: GESModel, step: int):
@@ -154,21 +159,21 @@ class GESStrategy(Strategy):
         if mutated:
             target_obj = model.surfel if is_surfel_phase else model.gaussian
             prefix = "surfel_" if is_surfel_phase else "gaussian_"
-            target_obj.means = Parameter(params["means"])
+            target_obj.means = params["means"]
             model.optimizers[prefix + "means"].param_groups[0]["params"] = [target_obj.means]
-            target_obj.quats = Parameter(params["quats"])
+            target_obj.quats = params["quats"]
             model.optimizers[prefix + "quats"].param_groups[0]["params"] = [target_obj.quats]
-            target_obj.scales = Parameter(params["scales"])
+            target_obj.scales = params["scales"]
             model.optimizers[prefix + "scales"].param_groups[0]["params"] = [target_obj.scales]
-            target_obj.opacities = Parameter(params["opacities"])
+            target_obj.opacities = params["opacities"]
             model.optimizers[prefix + "opacities"].param_groups[0]["params"] = [
                 target_obj.opacities
             ]
-            target_obj.features_dc = Parameter(params["features_dc"])
+            target_obj.features_dc = params["features_dc"]
             model.optimizers[prefix + "features_dc"].param_groups[0]["params"] = [
                 target_obj.features_dc
             ]
-            target_obj.features_rest = Parameter(params["features_rest"])
+            target_obj.features_rest = params["features_rest"]
             model.optimizers[prefix + "features_rest"].param_groups[0]["params"] = [
                 target_obj.features_rest
             ]
@@ -250,19 +255,19 @@ class GESStrategy(Strategy):
         params = model.get_surfel_param_dict()
         optimizers = model.get_densification_optimizers(self.surfel_density_stop_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
-        model.surfel.means = Parameter(params["means"])
+        model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
-        model.surfel.quats = Parameter(params["quats"])
+        model.surfel.quats = params["quats"]
         model.optimizers["surfel_quats"].param_groups[0]["params"] = [model.surfel.quats]
-        model.surfel.scales = Parameter(params["scales"])
+        model.surfel.scales = params["scales"]
         model.optimizers["surfel_scales"].param_groups[0]["params"] = [model.surfel.scales]
-        model.surfel.opacities = Parameter(params["opacities"])
+        model.surfel.opacities = params["opacities"]
         model.optimizers["surfel_opacities"].param_groups[0]["params"] = [model.surfel.opacities]
-        model.surfel.features_dc = Parameter(params["features_dc"])
+        model.surfel.features_dc = params["features_dc"]
         model.optimizers["surfel_features_dc"].param_groups[0]["params"] = [
             model.surfel.features_dc
         ]
-        model.surfel.features_rest = Parameter(params["features_rest"])
+        model.surfel.features_rest = params["features_rest"]
         model.optimizers["surfel_features_rest"].param_groups[0]["params"] = [
             model.surfel.features_rest
         ]
@@ -299,19 +304,19 @@ class GESStrategy(Strategy):
         params = model.get_surfel_param_dict()
         optimizers = model.get_densification_optimizers(self.surfel_prune_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
-        model.surfel.means = Parameter(params["means"])
+        model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
-        model.surfel.quats = Parameter(params["quats"])
+        model.surfel.quats = params["quats"]
         model.optimizers["surfel_quats"].param_groups[0]["params"] = [model.surfel.quats]
-        model.surfel.scales = Parameter(params["scales"])
+        model.surfel.scales = params["scales"]
         model.optimizers["surfel_scales"].param_groups[0]["params"] = [model.surfel.scales]
-        model.surfel.opacities = Parameter(params["opacities"])
+        model.surfel.opacities = params["opacities"]
         model.optimizers["surfel_opacities"].param_groups[0]["params"] = [model.surfel.opacities]
-        model.surfel.features_dc = Parameter(params["features_dc"])
+        model.surfel.features_dc = params["features_dc"]
         model.optimizers["surfel_features_dc"].param_groups[0]["params"] = [
             model.surfel.features_dc
         ]
-        model.surfel.features_rest = Parameter(params["features_rest"])
+        model.surfel.features_rest = params["features_rest"]
         model.optimizers["surfel_features_rest"].param_groups[0]["params"] = [
             model.surfel.features_rest
         ]
@@ -365,21 +370,21 @@ class GESStrategy(Strategy):
         params = model.get_gaussian_param_dict()
         optimizers = model.get_densification_optimizers(model.step)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
-        model.gaussian.means = Parameter(params["means"])
+        model.gaussian.means = params["means"]
         model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
-        model.gaussian.quats = Parameter(params["quats"])
+        model.gaussian.quats = params["quats"]
         model.optimizers["gaussian_quats"].param_groups[0]["params"] = [model.gaussian.quats]
-        model.gaussian.scales = Parameter(params["scales"])
+        model.gaussian.scales = params["scales"]
         model.optimizers["gaussian_scales"].param_groups[0]["params"] = [model.gaussian.scales]
-        model.gaussian.opacities = Parameter(params["opacities"])
+        model.gaussian.opacities = params["opacities"]
         model.optimizers["gaussian_opacities"].param_groups[0]["params"] = [
             model.gaussian.opacities
         ]
-        model.gaussian.features_dc = Parameter(params["features_dc"])
+        model.gaussian.features_dc = params["features_dc"]
         model.optimizers["gaussian_features_dc"].param_groups[0]["params"] = [
             model.gaussian.features_dc
         ]
-        model.gaussian.features_rest = Parameter(params["features_rest"])
+        model.gaussian.features_rest = params["features_rest"]
         model.optimizers["gaussian_features_rest"].param_groups[0]["params"] = [
             model.gaussian.features_rest
         ]
