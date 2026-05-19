@@ -71,7 +71,9 @@ def export_to_ply(tensor_dict, filename):
         for i in range(features_rest.shape[1]):
             elements[f"f_rest_{i}"] = features_rest[:, i]
 
-    elements["opacity"] = opacities.squeeze()
+    elements["opacity"] = 1.0 / (
+        1.0 + np.exp(-opacities.squeeze())
+    )  # Apply sigmoid to convert to [0, 1]
     elements["scale_0"], elements["scale_1"], elements["scale_2"] = scales.T
     elements["rot_0"], elements["rot_1"], elements["rot_2"], elements["rot_3"] = quats.T
 

@@ -556,11 +556,12 @@ class GESModel(Model):
         # {surfel_crop.opacities.device}")
         # rasterization of surfels
         if surfel_crop.means.shape[0] > 0:
+            opacities = torch.sigmoid(surfel_crop.opacities.squeeze(-1))
             surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_2dgs(
                 means=surfel_crop.means,
                 quats=surfel_crop.quats,
                 scales=surfel_crop.scales,
-                opacities=surfel_crop.opacities.squeeze(-1),
+                opacities=opacities,
                 colors=surfel_color_crop,
                 viewmats=viewmat,
                 Ks=intrinsic_mat,
@@ -624,11 +625,12 @@ class GESModel(Model):
             ] = -100.0  # set to a very low value so that after sigmoid it becomes near zero and
             # gets culled in rendering
 
+            opacities = torch.sigmoid(culled_opacities.squeeze(-1))
             gaussian_render, gaussian_alpha, gaussian_info = rasterization(
                 means=gaussian_crop.means,
                 quats=gaussian_crop.quats,
                 scales=gaussian_crop.scales,
-                opacities=culled_opacities.squeeze(-1),
+                opacities=opacities,
                 colors=gaussian_color_crop,
                 viewmats=viewmat,
                 Ks=intrinsic_mat,
