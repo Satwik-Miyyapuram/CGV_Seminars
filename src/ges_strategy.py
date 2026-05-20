@@ -248,8 +248,12 @@ class GESStrategy(Strategy):
             torch.cuda.empty_cache()
             mutated = True
 
-        # if step % self.reset_every == 0 and step > 0:
-        #     reset_opa(params, optimizers, state, value=self.prune_opa * 2.0)
+        if step % self.reset_every == 0 and step > 0:
+            # BUG 14 FIX: Re-enabled opacity reset. Without this, floaters (which 
+            # increase opacity to block background) never have their usefulness 
+            # re-evaluated, meaning they survive the 10k opacity cull and remain forever.
+            reset_opa(params=params, optimizers=optimizers, state=state, value=self.prune_opa * 2.0)
+            mutated = True
 
         if mutated:
             target_obj = model.surfel if is_surfel_phase else model.gaussian
@@ -317,14 +321,16 @@ class GESStrategy(Strategy):
         is_duplicate = is_grad_high & is_small
         num_duplicates = is_duplicate.sum().item()
 
-        # is_large = ~is_small
-        is_split = is_grad_high & ~is_small
-        
-        # BUG 12 FIX: Re-enable splitting based on 2D radius. When this was disabled,
-        # primitives in flat, low-gradient areas (like chair backrests) would simply 
-        # grow until they hit prune_scale3d, at which point they were deleted. 
-        # This created unrecoverable holes. Splitting them prevents culling.
-        is_split |= state["radii"] > self.grow_scale2d
+        # BUG 15 FIX: Force split primitives that are getting dangerously close to the 
+        # pruning threshold (90% of it). If we don't do this, surfels covering flat 
+        # regions (low gradient) will simply grow until they hit prune_scale3d and 
+        # get abruptly deleted, leaving unrecoverable holes.
+        scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
+        is_too_big_for_comfort = (
+            torch.exp(scales_to_check).max(dim=-1).values
+            > self.prune_scale3d * state["scene_scale"] * 0.9
+        )
+        is_split = (is_grad_high & ~is_small) | is_too_big_for_comfort
         n_split = is_split.sum().item()
 
         if num_duplicates > 0:
