@@ -146,6 +146,8 @@ class GESModel(Model):
                 scale_init=self.config.random_scale,
                 sh_degree=self.config.sh_degree,
             )
+            
+        device = self.surfel.means.device  # Assuming all parameters are on the same device, we can use this for convenience later when spawning Gaussians on the same device.
         num_points = self.surfel.means.shape[0]
         dim_sh = num_sh_bases(self.config.sh_degree)
         if (
@@ -154,7 +156,7 @@ class GESModel(Model):
             and self.seed_points[0].shape[1] > 0
         ):
             print("Initializing from seed points...")
-            shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().to(self.device)
+            shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().to(device)
             if self.config.sh_degree > 0:
                 shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
                 shs[:, 1:, 3:] = 0.0
@@ -170,12 +172,12 @@ class GESModel(Model):
 
         # Skeletons for Gaussian parameters (3D) must always be initialized on the proper device
         self.gaussian = Gaussian(
-            means=Parameter(torch.empty((0, 3), device=self.device)),
-            quats=Parameter(torch.empty((0, 4), device=self.device)),
-            scales=Parameter(torch.empty((0, 3), device=self.device)),
-            opacities=Parameter(torch.empty((0, 1), device=self.device)),
-            features_dc=Parameter(torch.empty((0, 3), device=self.device)),
-            features_rest=Parameter(torch.empty((0, dim_sh - 1, 3), device=self.device)),
+            means=Parameter(torch.empty((0, 3), device=device)),
+            quats=Parameter(torch.empty((0, 4), device=device)),
+            scales=Parameter(torch.empty((0, 3), device=device)),
+            opacities=Parameter(torch.empty((0, 1), device=device)),
+            features_dc=Parameter(torch.empty((0, 3), device=device)),
+            features_rest=Parameter(torch.empty((0, dim_sh - 1, 3), device=device)),
         )
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
