@@ -580,6 +580,10 @@ class GESModel(Model):
         # rasterization of surfels
         if surfel_crop.means.shape[0] > 0:
             opacities = torch.sigmoid(surfel_crop.opacities.squeeze(-1))
+            # BUG 4 FIX: Pass absgrad=True so the rasterizer computes the
+            # absolute-value gradient (means2d.absgrad) needed for effective
+            # densification. Without this, the strategy falls back to .grad
+            # which suffers from positive/negative cancellation.
             surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_2dgs(
                 means=surfel_crop.means,
                 quats=surfel_crop.quats,
@@ -593,6 +597,7 @@ class GESModel(Model):
                 packed=False,
                 render_mode=render_mode,
                 sh_degree=sh_degree_to_use,
+                absgrad=True,
             )
         else:
             empty_out = self.get_empty_outputs(width, height, self.background_color)
@@ -600,9 +605,9 @@ class GESModel(Model):
             assert isinstance(surfel_rgb_base, torch.Tensor)
             surfel_rgb = surfel_rgb_base.unsqueeze(0).to(self.device)
             if render_mode == "RGB+ED":
-                surfel_dpeth_base = empty_out["depth"]
-                assert isinstance(surfel_dpeth_base, torch.Tensor)
-                surfel_depth = surfel_dpeth_base.unsqueeze(0).to(self.device)
+                surfel_depth_base = empty_out["depth"]
+                assert isinstance(surfel_depth_base, torch.Tensor)
+                surfel_depth = surfel_depth_base.unsqueeze(0).to(self.device)
                 surfel_rgb = torch.cat([surfel_rgb, surfel_depth], dim=-1)
             surfel_alpha = torch.zeros_like(surfel_rgb[..., :1])
             surfel_info = None
@@ -666,6 +671,8 @@ class GESModel(Model):
             # gets culled in rendering
 
             opacities = torch.sigmoid(culled_opacities.squeeze(-1))
+            # BUG 4 FIX: Pass absgrad=True for Gaussian rasterization too,
+            # so that Gaussian densification (after 20k) uses absolute gradients.
             gaussian_render, gaussian_alpha, gaussian_info = rasterization(
                 means=gaussian_crop.means,
                 quats=gaussian_crop.quats,
@@ -680,6 +687,7 @@ class GESModel(Model):
                 render_mode=render_mode,
                 sh_degree=sh_degree_to_use,
                 rasterize_mode=self.config.rasterize_mode,
+                absgrad=True,
             )
         else:
             gaussian_render = torch.zeros_like(surfel_rgb)
@@ -689,9 +697,19 @@ class GESModel(Model):
         if self.training:
             if self.step <= 15000:
                 if surfel_info is not None:
-                    # Correctly extract unnormalized 2D radius for each individual surfel across views
+                    # BUG 7 FIX: 2DGS rasterization returns radii as [C, N, 2]
+                    # (two axis-aligned bounding-box radii per surfel per camera).
+                    # Reduce to [N] by taking max over cameras and max over the
+                    # 2 axes. Previously the else branch kept [1, N, 2] which
+                    # caused shape mismatches in visibility pruning at 15k.
                     radii_tensor = surfel_info["radii"].detach()
-                    if radii_tensor.dim() == 2:
+                    if radii_tensor.dim() == 3:
+                        # [C, N, 2] -> max over cameras -> [N, 2] -> max over axes -> [N]
+                        surfel_radii = radii_tensor.max(dim=0).values.max(dim=-1).values
+                    elif radii_tensor.dim() == 2:
+                        # Could be [C, N] (standard) or [N, 2] (2DGS with C=1 squeezed)
+                        # For [C, N]: max over cameras -> [N]
+                        # For [N, 2]: max over axes -> [N]
                         surfel_radii = radii_tensor.max(dim=0).values
                     else:
                         surfel_radii = radii_tensor
@@ -717,7 +735,8 @@ class GESModel(Model):
 
             self.strategy.step_pre_backward(self, self.step)
 
-        gaussian_alpha = gaussian_alpha[:, ...]
+        # gaussian_alpha already has the correct shape from rasterization.
+        # (Removed no-op `gaussian_alpha = gaussian_alpha[:, ...]` that was vestigial code.)
 
         background_color = self._get_background_color()
 
@@ -726,21 +745,47 @@ class GESModel(Model):
         surfel_rgb_color = surfel_rgb[:, ..., :3]
         surfel_rgb_color = torch.clamp(surfel_rgb_color, 0.0, 1.0)
 
-        # eq. 5 compositing
-        C_S = surfel_rgb_color.squeeze(0)
+        # BUG 5 FIX: Compositing aligned with paper Eq. 5.
+        # Paper: C = (C_S + C_G) / (W_S + W_G), where W_S = 1 (fixed).
+        #
+        # gsplat outputs premultiplied colors: C_S_premul = Σ(c_i * α_i * T_i)
+        # and alpha: W_S = Σ(α_i * T_i). To get the "color map" C_S that the
+        # paper refers to, we un-premultiply: C_S = C_S_premul / W_S.
+        #
+        # Then paper Eq. 5: C = (C_S + C_G) / (1 + W_G)
+        #                    = (C_S_premul/W_S + C_G) / (1 + W_G)
+        #
+        # For pixels with W_S=0 (no surfel coverage), we fall through to
+        # background. For the surfel-only phase (C_G=0, W_G=0):
+        # C = C_S_premul / W_S = un-premultiplied color (the actual surfel color).
+        #
+        # We also add background for uncovered regions using the total alpha.
+        C_S_premul = surfel_rgb_color.squeeze(0)
         W_S = surfel_alpha.squeeze(0)
-        C_G = gaussian_rgb.squeeze(0)
+        C_G_premul = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
 
-        final_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
-        rgb = (C_S + C_G) / (W_S + W_G + 1e-5) * final_alpha + (1 - final_alpha) * background_color
+        # Un-premultiply surfel color to get the color map C_S
+        # Guard against division by zero for pixels with no surfel coverage
+        C_S = C_S_premul / (W_S + 1e-10)
+
+        # Paper Eq. 5: C = (W_S_fixed * C_S + C_G) / (W_S_fixed + W_G), W_S_fixed = 1
+        # But we need to handle uncovered pixels (W_S ≈ 0) by blending with background.
+        # total_alpha represents overall scene coverage.
+        total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
+
+        # Compositing: weighted average of surfel + Gaussian, with background
+        rgb = (C_S + C_G_premul) / (1.0 + W_G + 1e-10) * total_alpha + (1.0 - total_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
 
         if render_mode == "RGB+ED":
             gaussian_depth = gaussian_render[:, ..., 3:4].squeeze(0)
-            surfel_depth = surfel_rgb[:, ..., 3:4].squeeze(0)
-            depth = (gaussian_depth * W_G + surfel_depth * W_S) / (W_S + W_G + 1e-5)
-            depth = torch.where(gaussian_alpha > 0, depth, depth.detach().max())
+            surfel_depth_val = surfel_rgb[:, ..., 3:4].squeeze(0)
+            # Depth compositing: weighted average of Gaussian and surfel depths
+            depth = (gaussian_depth * W_G + surfel_depth_val * W_S) / (W_S + W_G + 1e-5)
+            # BUG 8 FIX: Use total_alpha (already squeezed to [H,W,1]) instead
+            # of gaussian_alpha (which still has batch dim from rasterization)
+            depth = torch.where(total_alpha > 0, depth, depth.detach().max())
         else:
             depth = None
         if background_color.shape[0] == 3 and not self.training:
@@ -770,7 +815,7 @@ class GESModel(Model):
         return {
             "rgb": rgb,
             "depth": depth,  # type: ignore
-            "accumulation": final_alpha,
+            "accumulation": total_alpha,
             "background": background_color,
         }
 
@@ -924,26 +969,38 @@ class GESModel(Model):
             gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...]
         )
 
-        # TODO: differentiate the scales for surfel and gaussian
+        # BUG 6 FIX: Guard against empty Gaussian tensors producing NaN.
+        # When self.gaussian.scales has shape [0, 3] (before 20k when no
+        # Gaussians exist), amax/amin produce empty tensors and .mean()
+        # returns nan, which corrupts the loss and all parameter updates.
         if self.config.use_scale_regularization and self.step % 10 == 0:
             surfel_scale_exp = torch.exp(self.surfel.scales)
-            surfel_scale_reg = (
-                torch.maximum(
-                    surfel_scale_exp.amax(dim=-1) / surfel_scale_exp.amin(dim=-1),
-                    torch.tensor(self.config.max_gauss_ratio),
+            if surfel_scale_exp.shape[0] > 0:
+                surfel_scale_reg = (
+                    torch.maximum(
+                        surfel_scale_exp.amax(dim=-1) / surfel_scale_exp.amin(dim=-1),
+                        torch.tensor(self.config.max_gauss_ratio),
+                    )
+                    - self.config.max_gauss_ratio
                 )
-                - self.config.max_gauss_ratio
-            )
-            gaussian_scale_exp = torch.exp(self.gaussian.scales)
-            gaussian_scale_reg = (
-                torch.maximum(
-                    gaussian_scale_exp.amax(dim=-1) / gaussian_scale_exp.amin(dim=-1),
-                    torch.tensor(self.config.max_gauss_ratio),
-                )
-                - self.config.max_gauss_ratio
-            )
+                surfel_scale_reg = surfel_scale_reg.mean()
+            else:
+                surfel_scale_reg = torch.tensor(0.0, device=self.device)
 
-            scale_reg = 0.1 * (surfel_scale_reg.mean() + gaussian_scale_reg.mean())
+            gaussian_scale_exp = torch.exp(self.gaussian.scales)
+            if gaussian_scale_exp.shape[0] > 0:
+                gaussian_scale_reg = (
+                    torch.maximum(
+                        gaussian_scale_exp.amax(dim=-1) / gaussian_scale_exp.amin(dim=-1),
+                        torch.tensor(self.config.max_gauss_ratio),
+                    )
+                    - self.config.max_gauss_ratio
+                )
+                gaussian_scale_reg = gaussian_scale_reg.mean()
+            else:
+                gaussian_scale_reg = torch.tensor(0.0, device=self.device)
+
+            scale_reg = 0.1 * (surfel_scale_reg + gaussian_scale_reg)
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 

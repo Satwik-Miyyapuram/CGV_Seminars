@@ -21,10 +21,23 @@ base_optimizer_config = {
         "features_dc": AdamOptimizerConfig(lr=2.5e-3, weight_decay=1e-15),
         "features_rest": AdamOptimizerConfig(lr=1.25e-4, weight_decay=1e-15),
     }
+# BUG 9 FIX: Add exponential decay schedulers for means parameters.
+# Without decay, the means LR stays constant (1.6e-4) throughout training,
+# causing geometry jitter in later optimization stages when positions should
+# have converged. Splatfacto uses exponential decay to 1/100th of the
+# initial LR by the end of training.
 ges_optimizers = {}
-for name,optimizer in base_optimizer_config.items():
-    ges_optimizers[f'surfel_{name}'] = {"optimizer": optimizer, "scheduler": None}
-    ges_optimizers[f'gaussian_{name}'] = {"optimizer": optimizer, "scheduler": None}
+for name, optimizer in base_optimizer_config.items():
+    if name == "means":
+        # Means get LR decay: start at 1.6e-4, decay to 1.6e-6 over training
+        scheduler = ExponentialDecaySchedulerConfig(
+            lr_final=1.6e-6,
+            max_steps=30000,
+        )
+    else:
+        scheduler = None
+    ges_optimizers[f'surfel_{name}'] = {"optimizer": optimizer, "scheduler": scheduler}
+    ges_optimizers[f'gaussian_{name}'] = {"optimizer": optimizer, "scheduler": scheduler}
 ges_method = MethodSpecification(
     config=TrainerConfig(
         method_name="ges-method",

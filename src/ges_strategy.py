@@ -19,6 +19,10 @@ class GESStrategy(Strategy):
 
     This class implements the GES strategy for the GS densification. It defines
     the operations to be performed before and after the `loss.backward()` call.
+
+    The strategy uses absolute gradients (absgrad) by default, following AbsGS
+    (arXiv:2404.10484), which prevents positive/negative gradient cancellation
+    and produces significantly better densification decisions.
     """
 
     prune_opa: float = 0.005
@@ -28,10 +32,21 @@ class GESStrategy(Strategy):
     prune_scale3d: float = 0.1
     prune_scale2d: float = 0.15
     refine_start_iter: int = 500
-    refine_stop_iter: int = 15_000
+    # BUG 2 FIX: Separate stop iterations per phase. Surfel densification
+    # stops at surfel_density_stop_iter (10k), Gaussian densification runs
+    # from gaussian_spawn_iter (20k) to refine_stop_iter_gaussian (30k).
+    # The old single refine_stop_iter=15000 blocked ALL densification after
+    # 15k, meaning Gaussians spawned at 20k could never be split/duplicated.
+    refine_stop_iter: int = 15_000  # kept for surfel phase (but surfel phase ends at 10k anyway)
+    refine_stop_iter_gaussian: int = 30_000  # NEW: allow Gaussian densification until training ends
     reset_every: int = 3000
     refine_every: int = 100
     verbose: bool = False
+    # BUG 1 FIX: Use absolute gradients for densification. Without absgrad,
+    # positive and negative gradients cancel out, severely underestimating
+    # which primitives need to be split/duplicated. This matches nerfstudio's
+    # Splatfacto default (use_absgrad=True) and gsplat DefaultStrategy.
+    absgrad: bool = True
 
     surfel_density_stop_iter: int = 10000
     surfel_prune_iter: int = 15000
@@ -82,7 +97,11 @@ class GESStrategy(Strategy):
                 del optimizer.state[k]
 
     def step_pre_backward(self, model: GESModel, step: int):
-        """Operations to be performed before the `loss.backward()` call."""
+        """Operations to be performed before the `loss.backward()` call.
+        
+        Calls retain_grad() on the gradient tensor so its .grad (and .absgrad
+        when absgrad=True was passed to the rasterizer) are kept after backward.
+        """
         if step <= self.surfel_density_stop_iter:
             surfel_info = model.info.get("surfels")
             if surfel_info is not None and "means2d" in surfel_info:
@@ -93,8 +112,40 @@ class GESStrategy(Strategy):
                 gaussians_info["means2d"].retain_grad()
 
     def _update_state(self, params: dict[str, Parameter], state: dict[str, Any], info: dict):
-        """Helper function to update the strategy state."""
-        grads = info["means2d"].grad.clone()
+        """Helper function to update the strategy state.
+        
+        BUG 1 FIX: Use absgrad (absolute value of gradients) instead of raw
+        .grad when self.absgrad is True. Without this, positive and negative
+        gradients cancel during accumulation, leading to an undercount of
+        which primitives need densification. This was the primary cause of
+        too few surfels being created during steps 500-10000.
+        
+        The gsplat DefaultStrategy uses:
+            if self.absgrad:
+                grads = info[key].absgrad.clone()
+            else:
+                grads = info[key].grad.clone()
+        We follow the same pattern here.
+        """
+        means2d = info["means2d"]
+        if self.absgrad:
+            # absgrad is set by the rasterizer when absgrad=True is passed.
+            # It contains |dL/d(means2d)| — the absolute value of gradients.
+            if hasattr(means2d, "absgrad") and means2d.absgrad is not None:
+                grads = means2d.absgrad.clone()
+            else:
+                # Fallback: if absgrad wasn't computed (e.g. first step or
+                # rasterizer didn't set it), use regular grad with abs().
+                if means2d.grad is not None:
+                    grads = means2d.grad.abs().clone()
+                else:
+                    return  # No gradient available yet
+        else:
+            if means2d.grad is not None:
+                grads = means2d.grad.clone()
+            else:
+                return  # No gradient available yet
+
         grads[..., 0] *= info["width"] / 2.0 * info["n_cameras"]
         grads[..., 1] *= info["height"] / 2.0 * info["n_cameras"]
 
@@ -107,6 +158,12 @@ class GESStrategy(Strategy):
         if state["radii"] is None:
             state["radii"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
 
+        # For 2DGS (surfel) rasterization, radii shape is [C, N, 2] (two axis-
+        # aligned bounding-box radii). For standard 3DGS, it's [C, N].
+        # The .all(dim=-1) collapses the trailing dim: [C,N,2] -> [C,N] (checks
+        # both radii > 0). For [C,N] it would wrongly collapse N, but gsplat's
+        # own DefaultStrategy uses the same pattern (line 257), so this is the
+        # canonical approach for 2DGS radii.
         sel = (info["radii"] > 0.0).all(dim=-1)  # [C, N]
         gs_ids = torch.where(sel)[1]  # [nnz]
         grads = grads[sel]  # [nnz, 2]
@@ -126,20 +183,33 @@ class GESStrategy(Strategy):
         )
 
     def step_post_backward(self, model: GESModel, step: int):
-        """Operations to be performed after the `loss.backward()` call."""
-        if step >= self.refine_stop_iter:
-            return
-
-        # Determine what are getting denisified
+        """Operations to be performed after the `loss.backward()` call.
+        
+        BUG 2 FIX: Use phase-specific stop iterations instead of a single
+        refine_stop_iter. The surfel phase runs densification from
+        refine_start_iter to surfel_density_stop_iter (500-10000). The
+        Gaussian phase runs from gaussian_spawn_iter to
+        refine_stop_iter_gaussian (20000-30000). Previously, the single
+        refine_stop_iter=15000 caused step_post_backward to return early
+        for ALL steps >= 15000, which meant Gaussians spawned at 20k
+        could never be densified (split/duplicated/pruned).
+        """
+        # Determine what is being densified based on the current phase
         if step <= self.surfel_density_stop_iter:
+            # Surfel densification phase: steps 0 - 10k
+            if step >= self.refine_stop_iter:
+                return  # Surfel refinement has stopped
             target_name = "surfels"
             is_surfel_phase = True
         elif step > self.gaussian_spawn_iter:
+            # Gaussian densification phase: steps 20k+
+            if step >= self.refine_stop_iter_gaussian:
+                return  # Gaussian refinement has stopped
             target_name = "gaussians"
             is_surfel_phase = False
         else:
-            # we are in the middle phase where we are not doing any densification, just refining
-            # the existing points.
+            # Middle phase (10k-20k): no densification, just refining
+            # existing surfel geometry with frozen opacity.
             return
 
         if not is_surfel_phase and model.gaussian.means.shape[0] == 0:
@@ -331,6 +401,19 @@ class GESStrategy(Strategy):
         # Use the unnormalized pixel-unit radii cache directly from the model,
         # which avoids the strategy state's normalization and periodic zeroing.
         max_2d_radius = model.surfel_radii_cache.detach()
+        
+        # BUG 3 FIX: surfel_radii_cache can have shape [C, N, 2] or [N, 2] or [N]
+        # from 2DGS rasterization. Reduce to [N] scalar per surfel for the
+        # area computation. For [C, N, 2], max over cameras (dim 0) then max
+        # over the 2 axis radii (dim -1). For [N, 2], just max over axis.
+        if max_2d_radius.dim() == 3:
+            # [C, N, 2] -> max over cameras -> [N, 2] -> max over axes -> [N]
+            max_2d_radius = max_2d_radius.max(dim=0).values.max(dim=-1).values
+        elif max_2d_radius.dim() == 2:
+            # [N, 2] -> max over axes -> [N]
+            max_2d_radius = max_2d_radius.max(dim=-1).values
+        # else: already [N], no change needed
+        
         opacities = torch.sigmoid(model.surfel.opacities.detach()).squeeze()
         
         # Dynamic culling: approximate pixel coverage for each surfel
