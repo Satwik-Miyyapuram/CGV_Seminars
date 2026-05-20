@@ -50,6 +50,7 @@ class GESStrategy(Strategy):
                 # radii of the surfels
                 "grad2d": None,
                 "count": None,
+                "surfel_radii_cache": None,
                 "scene_scale": scene_scale,
             },
             "gaussians": {
@@ -304,6 +305,13 @@ class GESStrategy(Strategy):
         # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
         
+        # Prune the unnormalized radii cache to match the new param shape
+        if hasattr(model, "surfel_radii_cache") and model.surfel_radii_cache is not None and model.surfel_radii_cache.shape[0] > 0:
+            model.surfel_radii_cache = model.surfel_radii_cache[keep_mask]
+        state = model.strategy_state["surfels"]
+        if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
+            state["surfel_radii_cache"] = state["surfel_radii_cache"][keep_mask]
+
         print(
             f"Discarded surfels based on the keep_mask at iteration {model.step}. \
             Now having {model.surfel.means.shape[0]} surfels."
@@ -320,7 +328,9 @@ class GESStrategy(Strategy):
         # Select threshold based on scene type
         n_threshold = self.surfel_visibility_threshold_real if self.use_real_scene else self.surfel_visibility_threshold_synthetic
         
-        max_2d_radius = model.strategy_state["surfels"]["radii"].detach()
+        # Use the unnormalized pixel-unit radii cache directly from the model,
+        # which avoids the strategy state's normalization and periodic zeroing.
+        max_2d_radius = model.surfel_radii_cache.detach()
         opacities = torch.sigmoid(model.surfel.opacities.detach()).squeeze()
         
         # Dynamic culling: approximate pixel coverage for each surfel
@@ -365,6 +375,13 @@ class GESStrategy(Strategy):
         # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
         
+        # Prune the unnormalized radii cache to match the new param shape
+        if hasattr(model, "surfel_radii_cache") and model.surfel_radii_cache is not None and model.surfel_radii_cache.shape[0] > 0:
+            model.surfel_radii_cache = model.surfel_radii_cache[visibility_mask]
+        state = model.strategy_state["surfels"]
+        if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
+            state["surfel_radii_cache"] = state["surfel_radii_cache"][visibility_mask]
+
         print(
             f"Pruned surfels based on visibility at iteration {model.step}. Now having \
             {model.surfel.means.shape[0]} surfels."

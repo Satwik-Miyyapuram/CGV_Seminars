@@ -689,11 +689,29 @@ class GESModel(Model):
         if self.training:
             if self.step <= 15000:
                 if surfel_info is not None:
-                    surfel_radii = surfel_info["radii"].detach().max(dim=-1).values.squeeze(0)
-                    if self.surfel_radii_cache.shape[0] != surfel_radii.shape[0]:
-                        self.surfel_radii_cache = torch.zeros_like(surfel_radii)
-                    self.surfel_radii_cache = torch.maximum(self.surfel_radii_cache, surfel_radii)
-                    self.strategy_state["surfels"]["radii"] = self.surfel_radii_cache
+                    # Correctly extract unnormalized 2D radius for each individual surfel across views
+                    radii_tensor = surfel_info["radii"].detach()
+                    if radii_tensor.dim() == 2:
+                        surfel_radii = radii_tensor.max(dim=0).values
+                    else:
+                        surfel_radii = radii_tensor
+                    
+                    state = self.strategy_state["surfels"]
+                    # If this is the first step or we have just loaded a checkpoint, restore from self.surfel_radii_cache if available.
+                    # Otherwise, initialize with zeros.
+                    if "surfel_radii_cache" not in state or state["surfel_radii_cache"] is None:
+                        if self.surfel_radii_cache is not None and self.surfel_radii_cache.shape[0] == surfel_radii.shape[0]:
+                            state["surfel_radii_cache"] = self.surfel_radii_cache.clone()
+                        else:
+                            state["surfel_radii_cache"] = torch.zeros_like(surfel_radii)
+                    
+                    # If there's a shape mismatch (e.g. from manual/external changes), resize to zeros
+                    if state["surfel_radii_cache"].shape[0] != surfel_radii.shape[0]:
+                        state["surfel_radii_cache"] = torch.zeros_like(surfel_radii)
+                    
+                    # Accumulate maximum pixel-unit radii over all training steps (never zeroed out by strategy)
+                    state["surfel_radii_cache"] = torch.maximum(state["surfel_radii_cache"], surfel_radii)
+                    self.surfel_radii_cache = state["surfel_radii_cache"]
                 else:
                     surfel_radii = None
 
