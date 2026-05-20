@@ -319,8 +319,12 @@ class GESStrategy(Strategy):
 
         # is_large = ~is_small
         is_split = is_grad_high & ~is_small
-        # is_split |= state["radii"] > self.grow_scale2d # not using for now, since the source says
-        # it has bugs
+        
+        # BUG 12 FIX: Re-enable splitting based on 2D radius. When this was disabled,
+        # primitives in flat, low-gradient areas (like chair backrests) would simply 
+        # grow until they hit prune_scale3d, at which point they were deleted. 
+        # This created unrecoverable holes. Splitting them prevents culling.
+        is_split |= state["radii"] > self.grow_scale2d
         n_split = is_split.sum().item()
 
         if num_duplicates > 0:
@@ -537,11 +541,18 @@ class GESStrategy(Strategy):
         surfel_features_dc_mean = model.surfel.features_dc.detach().mean(dim=0, keepdim=True)
         surfel_features_rest_mean = model.surfel.features_rest.detach().mean(dim=0, keepdim=True)
 
+        # BUG 13 FIX: Initialize Gaussian scales SAFELY below the pruning threshold.
+        # Previously it was `torch.ones * -1.0`, which evaluates to ~0.367.
+        # Since 0.367 > prune_scale3d (0.1), EVERY newly spawned Gaussian was
+        # instantly pruned at the very next iteration (step 20,100).
+        scene_scale = model.strategy_state["gaussians"]["scene_scale"]
+        import math
+        safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
+
         new_data = {
             "means": saved_gaussian_seeds.clone(),
             "quats": random_quat_tensor(num_new_gaussians).to(device),
-            "scales": torch.ones((num_new_gaussians, 3), device=device)
-            * -1.0,  # Initialize scales larger than before (log scale)
+            "scales": torch.ones((num_new_gaussians, 3), device=device) * safe_scale,
             "opacities": torch.logit(
                 0.5 * torch.ones((num_new_gaussians, 1), device=device)
             ),  # Initialize opacities to medium value (0.5 in probability space)
