@@ -87,8 +87,32 @@ async function init() {
         }
     });
 
+    // Load Config (for Background Color)
+    const configInput = document.getElementById('configInput') as HTMLInputElement;
+    if (configInput) {
+        configInput.addEventListener('change', async (e) => {
+            const file = (e.target as HTMLInputElement).files[0];
+            if (file) {
+                const text = await file.text();
+                try {
+                    const config = JSON.parse(text);
+                    if (config.background_color) {
+                        const bg = config.background_color;
+                        compositeMaterial.uniforms.uBackgroundColor.value.setRGB(bg[0], bg[1], bg[2]);
+                        console.log("Loaded background color from config:", bg);
+                    }
+                } catch (err) {
+                    console.error("Failed to parse config.json", err);
+                }
+            }
+        });
+    }
+
     const compositeMaterial = new THREE.ShaderMaterial({
-        uniforms: { tDiffuse: {value: renderTarget.texture} },
+        uniforms: { 
+            tDiffuse: {value: renderTarget.texture},
+            uBackgroundColor: {value: new THREE.Color(1.0, 1.0, 1.0)} // Default to white
+        },
         vertexShader: `
             varying vec2 vUv;
             void main() {
@@ -98,15 +122,27 @@ async function init() {
         `,
         fragmentShader: `
             uniform sampler2D tDiffuse;
+            uniform vec3 uBackgroundColor;
             varying vec2 vUv;
             void main() {
                 vec4 texel = texture2D(tDiffuse, vUv);
+                
                 // (C_S+C_G)/(W_S+W_G+epsilon)
-                vec3 foregroundColor = texel.rgb /max(texel.a, 0.0001);
+                vec3 foregroundColor = texel.rgb / max(texel.a, 0.0001);
+                
+                // CRITICAL FIX: Clamp foreground color!
+                // Additive blending can cause accumulated colors to exceed 1.0 if the 
+                // raw SH coefficients mapped to colors > 1.0. Clamping prevents glowing spikes.
+                foregroundColor = clamp(foregroundColor, 0.0, 1.0);
+                
                 float finalAlpha = clamp(texel.a, 0.0, 1.0);
-                vec3 backgroundColor = vec3(0.0); // Assuming black background
-                vec3 finalColor = mix(backgroundColor, foregroundColor, finalAlpha);
-                finalColor = pow(foregroundColor, vec3(1.0/2.2)); // Gamma correction
+                
+                // Correctly blend the un-premultiplied color with the background color
+                vec3 finalColor = mix(uBackgroundColor, foregroundColor, finalAlpha);
+                
+                // Apply gamma correction to the final composited color
+                finalColor = pow(finalColor, vec3(1.0/2.2)); 
+                
                 gl_FragColor = vec4(finalColor, 1.0);
             }
         `,

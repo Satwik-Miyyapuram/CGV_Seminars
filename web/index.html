@@ -41,10 +41,16 @@
             <input type="file" id="surfelInput" accept=".ply">
         </div>
 
-        <div style="margin-bottom: 20px;">
-            <label style="font-weight: bold; color: #2196F3;">2. Load Gaussians(.ply)</label><br>
-            <input type="file" id="gaussianInput" accept=".ply">
+        <div class="control-group">
+            <label for="gaussianInput" class="custom-file-upload">2. Load Gaussians(.ply)</label>
+            <input type="file" id="gaussianInput" accept=".ply" />
         </div>
+        
+        <div class="control-group">
+            <label for="configInput" class="custom-file-upload" style="color: #FFaa33;">3. Load Config(.json)</label>
+            <input type="file" id="configInput" accept=".json" />
+        </div>
+
         <hr style="border-color: #444;">
         <label>Surfel Depth Offset(&delta;):
             <span id="deltaValue">0.5</span>

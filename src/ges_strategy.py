@@ -325,11 +325,15 @@ class GESStrategy(Strategy):
         # pruning threshold (90% of it). If we don't do this, surfels covering flat 
         # regions (low gradient) will simply grow until they hit prune_scale3d and 
         # get abruptly deleted, leaving unrecoverable holes.
+        # CRITICAL UPDATE: We ONLY force split solid objects (opacity > 0.8). If we 
+        # force split fuzzy floaters, they exponentially explode into hundreds of 
+        # thousands of garbage primitives! Floaters should just hit the limit and die.
         scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
+        is_solid = torch.sigmoid(params["opacities"].flatten()) > 0.8
         is_too_big_for_comfort = (
             torch.exp(scales_to_check).max(dim=-1).values
             > self.prune_scale3d * state["scene_scale"] * 0.9
-        )
+        ) & is_solid
         is_split = (is_grad_high & ~is_small) | is_too_big_for_comfort
         n_split = is_split.sum().item()
 
@@ -367,15 +371,11 @@ class GESStrategy(Strategy):
             # threshold and aggressively prune almost all surfels in the scene!
             scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
             
-            # BUG 15 FIX: Relax the pruning threshold for surfels. 2DGS primitives easily 
-            # stretch to cover large flat surfaces (like a chair backrest). If they hit 
-            # 10% (0.1) of the scene scale, they were getting abruptly deleted, leaving holes.
-            # We relax it to 50% for surfels so they can do their job without being killed.
-            effective_prune_scale = self.prune_scale3d * 5.0 if is_surfel else self.prune_scale3d
-            
+            # We reverted the 50% relaxation here because forced splitting (opacity gated)
+            # in _grow_gs now cleanly solves the holes without needing massive 50% blobs.
             is_too_big = (
                 torch.exp(scales_to_check).max(dim=-1).values
-                > effective_prune_scale * state["scene_scale"]
+                > self.prune_scale3d * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big
         num_prune = is_prune.sum().item()
