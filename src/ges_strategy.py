@@ -366,9 +366,16 @@ class GESStrategy(Strategy):
             # If we include it in the max() check, it will falsely trigger the "too big"
             # threshold and aggressively prune almost all surfels in the scene!
             scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
+            
+            # BUG 15 FIX: Relax the pruning threshold for surfels. 2DGS primitives easily 
+            # stretch to cover large flat surfaces (like a chair backrest). If they hit 
+            # 10% (0.1) of the scene scale, they were getting abruptly deleted, leaving holes.
+            # We relax it to 50% for surfels so they can do their job without being killed.
+            effective_prune_scale = self.prune_scale3d * 5.0 if is_surfel else self.prune_scale3d
+            
             is_too_big = (
                 torch.exp(scales_to_check).max(dim=-1).values
-                > self.prune_scale3d * state["scene_scale"]
+                > effective_prune_scale * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big
         num_prune = is_prune.sum().item()
