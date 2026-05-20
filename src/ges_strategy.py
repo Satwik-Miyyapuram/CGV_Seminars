@@ -571,13 +571,17 @@ class GESStrategy(Strategy):
         import math
         safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
 
+        # Initialize quats to identity [1, 0, 0, 0] as in standard 3DGS
+        quats = torch.zeros((num_new_gaussians, 4), device=device)
+        quats[:, 0] = 1.0
+        
         new_data = {
             "means": saved_gaussian_seeds.clone(),
-            "quats": random_quat_tensor(num_new_gaussians).to(device),
+            "quats": quats,
             "scales": torch.ones((num_new_gaussians, 3), device=device) * safe_scale,
             "opacities": torch.logit(
-                0.5 * torch.ones((num_new_gaussians, 1), device=device)
-            ),  # Initialize opacities to medium value (0.5 in probability space)
+                0.1 * torch.ones((num_new_gaussians, 1), device=device)
+            ),  # Initialize opacities to 0.1 as in standard 3DGS
             "features_dc": features_dc,  # Use original discarded surfel colors
             "features_rest": features_rest,  # Use original discarded surfel SH
         }

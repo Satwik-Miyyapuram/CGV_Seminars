@@ -343,16 +343,17 @@ class GESModel(Model):
                 print(f"Reached {step} iterations, entering discard phase...")
                 opacities = torch.sigmoid(self.surfel.opacities.detach())
                 # Squeeze might make it scalar if there's 1 point, so we reshape to 1D
-                # Keep only high-confidence surfels (opacity >= 0.8), discard low-opacity ones as Gaussian seeds
-                # This follows the paper: discard surfels with w_i < 0.8
-                mask = (opacities >= 0.8).view(-1)
+                # Keep only high-confidence surfels, discard low-opacity ones as Gaussian seeds
+                # The paper uses 0.8, but without explicit opacity regularization, our opacities 
+                # naturally sit much lower. 0.8 often discards 99.9% of the scene.
+                # We use 0.1, and guarantee we keep at least 50% of the surfels.
+                mask = (opacities >= 0.1).view(-1)
 
-                # If the threshold drops everything, we need to keep at least a few points to prevent a crash downstream
-                if mask.sum() == 0:
-                    print(
-                        "Warning: Opacity threshold 0.8 discarded all points! Falling back to discarding nothing for stability."
-                    )
-                    mask = torch.ones_like(mask)
+                # If the threshold drops too much, keep the top 50% based on median
+                if mask.sum() < len(mask) * 0.5:
+                    median_val = torch.median(opacities).item()
+                    mask = (opacities >= median_val).view(-1)
+                    print(f"Warning: Opacity threshold 0.1 discarded too much! Falling back to median threshold ({median_val:.4f}).")
 
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
@@ -413,8 +414,18 @@ class GESModel(Model):
                     import os
                     os.makedirs("web_assets", exist_ok=True)
                     steps, losses = zip(*self.l1_loss_history)
+                    
+                    # Compute Exponential Moving Average (EMA) for smoother plotting
+                    alpha = 0.05
+                    ema_losses = []
+                    current_ema = losses[0]
+                    for loss in losses:
+                        current_ema = alpha * loss + (1 - alpha) * current_ema
+                        ema_losses.append(current_ema)
+                        
                     plt.figure(figsize=(10, 5))
-                    plt.plot(steps, losses, label="L1 Loss")
+                    plt.plot(steps, ema_losses, label="L1 Loss (Smoothed)", color='tab:blue')
+                    plt.plot(steps, losses, alpha=0.15, color='tab:blue', label="Raw Batch Loss")
                     plt.axvline(x=10000, color='r', linestyle='--', alpha=0.5, label='Discard Phase')
                     plt.axvline(x=20000, color='g', linestyle='--', alpha=0.5, label='Gaussian Spawn')
                     plt.xlabel("Iterations")
@@ -424,7 +435,7 @@ class GESModel(Model):
                     plt.grid(True, alpha=0.3)
                     plt.savefig("web_assets/loss_curve.png", dpi=150)
                     plt.close()
-                    print(f"Saved loss curve to web_assets/loss_curve.png")
+                    print(f"Saved smoothed loss curve to web_assets/loss_curve.png")
                 except Exception as e:
                     print(f"Failed to plot loss curve: {e}")
 
