@@ -126,7 +126,11 @@ class GESModel(Model):
         self.register_buffer(
             "saved_gaussian_seeds", torch.zeros((0, 3))
         )  # buffer to save discarded surfel means for gaussian spawning
+        self.register_buffer("saved_gaussian_features_dc", torch.zeros((0, 3)))
+        self.register_buffer("saved_gaussian_features_rest", torch.zeros((0, 15, 3)))
         self.register_buffer("surfel_radii_cache", torch.zeros((0,)))
+        
+        self.l1_loss_history = []  # For plotting loss curve at the end
 
     def populate_modules(self):
         """
@@ -280,6 +284,11 @@ class GESModel(Model):
         if "saved_gaussian_seeds" in state_dict:
             num_seeds = state_dict["saved_gaussian_seeds"].shape[0]
             self.saved_gaussian_seeds = torch.zeros((num_seeds, 3), device=self.device)
+            if "saved_gaussian_features_dc" in state_dict:
+                self.saved_gaussian_features_dc = torch.zeros((num_seeds, 3), device=self.device)
+            if "saved_gaussian_features_rest" in state_dict:
+                rest_shape = state_dict["saved_gaussian_features_rest"].shape
+                self.saved_gaussian_features_rest = torch.zeros(*rest_shape, device=self.device)
         if "surfel_radii_cache" in state_dict:
             num_radii = state_dict["surfel_radii_cache"].shape[0]
             self.surfel_radii_cache = torch.zeros((num_radii,), device=self.device)
@@ -348,6 +357,8 @@ class GESModel(Model):
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
                 self.saved_gaussian_seeds = self.surfel.means.detach()[discard_mask].clone()
+                self.saved_gaussian_features_dc = self.surfel.features_dc.detach()[discard_mask].clone()
+                self.saved_gaussian_features_rest = self.surfel.features_rest.detach()[discard_mask].clone()
                 print(
                     f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels."
                 )
@@ -394,6 +405,87 @@ class GESModel(Model):
                 filename = f"milestone_{step}.pth"
                 torch.save(self.state_dict(), filename)
                 print(f"Saved model state at milestone iteration {step} to {filename}")
+
+        def save_loss_graph_callback(step: int):
+            if step == 29999 and len(self.l1_loss_history) > 0:
+                try:
+                    import matplotlib.pyplot as plt
+                    import os
+                    os.makedirs("web_assets", exist_ok=True)
+                    steps, losses = zip(*self.l1_loss_history)
+                    plt.figure(figsize=(10, 5))
+                    plt.plot(steps, losses, label="L1 Loss")
+                    plt.axvline(x=10000, color='r', linestyle='--', alpha=0.5, label='Discard Phase')
+                    plt.axvline(x=20000, color='g', linestyle='--', alpha=0.5, label='Gaussian Spawn')
+                    plt.xlabel("Iterations")
+                    plt.ylabel("L1 Loss")
+                    plt.title("Training L1 Loss Curve")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.savefig("web_assets/loss_curve.png", dpi=150)
+                    plt.close()
+                    print(f"Saved loss curve to web_assets/loss_curve.png")
+                except Exception as e:
+                    print(f"Failed to plot loss curve: {e}")
+
+        def save_fixed_view_callback(step: int):
+            target_steps = [1000, 5000, 9999, 10001, 14999, 15001, 17999, 18001, 18999, 19001, 19999, 20001, 25000, 29999]
+            if step in target_steps and hasattr(self, 'fixed_camera'):
+                try:
+                    was_training = self.training
+                    self.eval()
+                    with torch.no_grad():
+                        # Save current state to avoid modifying it
+                        bg = self.config.background_color
+                        self.config.background_color = "white" # Force white background for consistency
+                        
+                        outputs = self.get_outputs(self.fixed_camera)
+                        rgb = outputs["rgb"].detach().cpu().numpy()
+                        
+                        self.config.background_color = bg # Restore
+                        
+                        import os
+                        from PIL import Image, ImageDraw, ImageFont
+                        import numpy as np
+                        os.makedirs("web_assets/progress", exist_ok=True)
+                        rgb_img = (rgb * 255).astype(np.uint8)
+                        img = Image.fromarray(rgb_img)
+                        
+                        # Add step text
+                        draw = ImageDraw.Draw(img)
+                        text = f"Step {step}"
+                        # Try to draw text, ignore if font fails
+                        draw.text((10, 10), text, fill=(0, 0, 0))
+                        
+                        img.save(f"web_assets/progress/step_{step}.png")
+                        
+                    if was_training:
+                        self.train()
+                        
+                    # At the end, composite them
+                    if step == 29999:
+                        images = []
+                        for s in target_steps:
+                            path = f"web_assets/progress/step_{s}.png"
+                            if os.path.exists(path):
+                                images.append(Image.open(path))
+                        
+                        if images:
+                            # Create a grid. Calculate rows and cols.
+                            cols = 4
+                            rows = (len(images) + cols - 1) // cols
+                            w, h = images[0].size
+                            composite = Image.new('RGB', (w * cols, h * rows), color='white')
+                            
+                            for i, img in enumerate(images):
+                                row = i // cols
+                                col = i % cols
+                                composite.paste(img, (col * w, row * h))
+                                
+                            composite.save("web_assets/progression_composite.png")
+                            print(f"Saved progression composite to web_assets/progression_composite.png")
+                except Exception as e:
+                    print(f"Failed to save fixed view at step {step}: {e}")
 
         # callbacks.append(
         #     TrainingCallback(
@@ -449,6 +541,20 @@ class GESModel(Model):
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                 iters=(9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1),
                 func=save_milestone_callback,
+            )
+        )
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                iters=(29999,),
+                func=save_loss_graph_callback,
+            )
+        )
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                iters=(1000, 5000, 9999, 10001, 14999, 15001, 17999, 18001, 18999, 19001, 19999, 20001, 25000, 29999),
+                func=save_fixed_view_callback,
             )
         )
         return callbacks
@@ -511,6 +617,9 @@ class GESModel(Model):
         if self.training:
             assert camera.shape[0] == 1, "Only one camera at a time"
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
+            # Save the first training camera to render progress from a fixed view
+            if not hasattr(self, 'fixed_camera'):
+                self.fixed_camera = camera.to("cpu")
         else:
             optimized_camera_to_world = camera.camera_to_worlds
 
@@ -769,12 +878,14 @@ class GESModel(Model):
         W_G = gaussian_alpha.squeeze(0)
 
         total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
-
-        # Standard alpha compositing: premultiplied colors sum + background
-        # This works because gsplat outputs C_premul = Σ(c_i * α_i * T_i)
-        # and alpha = Σ(α_i * T_i), so:
-        # rgb = C_S_premul + C_G_premul + (1 - total_alpha) * background
-        rgb = C_S_premul + C_G_premul + (1.0 - total_alpha) * background_color
+        
+        # Paper Eq. 5: C = (C_S + C_G) / (W_S + W_G)
+        # Here C_S and C_G in the paper text refer to the premultiplied colors.
+        # This computes the weighted average of the unpremultiplied colors.
+        combined_color = (C_S_premul + C_G_premul) / (W_S + W_G + 1e-5)
+        
+        # Then we composite this combined color over the background using total_alpha
+        rgb = combined_color * total_alpha + (1.0 - total_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
 
         if render_mode == "RGB+ED":
@@ -964,6 +1075,10 @@ class GESModel(Model):
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
+        
+        if self.training and self.step % 100 == 0:
+            self.l1_loss_history.append((self.step, Ll1.item()))
+            
         simloss = 1 - self.ssim(
             gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...]
         )

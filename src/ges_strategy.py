@@ -548,11 +548,20 @@ class GESStrategy(Strategy):
         
         device = model.device
         
-        # Find closest surfel for each seed to inherit features (colors)
-        # For now, initialize with surfel SH features at similar positions
-        # Since we don't have exact position mapping, use mean surfel features as initialization
-        surfel_features_dc_mean = model.surfel.features_dc.detach().mean(dim=0, keepdim=True)
-        surfel_features_rest_mean = model.surfel.features_rest.detach().mean(dim=0, keepdim=True)
+        # Get saved features if they exist, otherwise fallback to mean surfel features
+        if hasattr(model, "saved_gaussian_features_dc") and model.saved_gaussian_features_dc.shape[0] == num_new_gaussians:
+            features_dc = model.saved_gaussian_features_dc.clone()
+        else:
+            print("Warning: saved_gaussian_features_dc not found or mismatched size. Falling back to mean surfel color.")
+            surfel_features_dc_mean = model.surfel.features_dc.detach().mean(dim=0, keepdim=True)
+            features_dc = surfel_features_dc_mean.expand(num_new_gaussians, -1).clone()
+            
+        if hasattr(model, "saved_gaussian_features_rest") and model.saved_gaussian_features_rest.shape[0] == num_new_gaussians:
+            features_rest = model.saved_gaussian_features_rest.clone()
+        else:
+            print("Warning: saved_gaussian_features_rest not found or mismatched size. Falling back to mean surfel SH.")
+            surfel_features_rest_mean = model.surfel.features_rest.detach().mean(dim=0, keepdim=True)
+            features_rest = surfel_features_rest_mean.expand(num_new_gaussians, -1, -1).clone()
 
         # BUG 13 FIX: Initialize Gaussian scales SAFELY below the pruning threshold.
         # Previously it was `torch.ones * -1.0`, which evaluates to ~0.367.
@@ -569,8 +578,8 @@ class GESStrategy(Strategy):
             "opacities": torch.logit(
                 0.5 * torch.ones((num_new_gaussians, 1), device=device)
             ),  # Initialize opacities to medium value (0.5 in probability space)
-            "features_dc": surfel_features_dc_mean.expand(num_new_gaussians, -1).clone(),  # Inherit surfel colors
-            "features_rest": surfel_features_rest_mean.expand(num_new_gaussians, -1, -1).clone(),  # Inherit surfel SH
+            "features_dc": features_dc,  # Use original discarded surfel colors
+            "features_rest": features_rest,  # Use original discarded surfel SH
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
