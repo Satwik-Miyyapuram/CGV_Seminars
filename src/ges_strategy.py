@@ -229,14 +229,14 @@ class GESStrategy(Strategy):
         mutated = False
 
         if step >= self.refine_start_iter and step % self.refine_every == 0:
-            num_duplicates, n_split = self._grow_gs(params, optimizers, state, step)
+            num_duplicates, n_split = self._grow_gs(params, optimizers, state, step, is_surfel_phase)
             target_type = "Surfels" if is_surfel_phase else "Gaussians"
             if self.verbose or is_surfel_phase:  # Always log surfel densification
                 print(
                     f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
                     f"Now having {len(params['means'])} {target_type}."
                 )
-            num_prune = self._prune_gs(params, optimizers, state, step)
+            num_prune = self._prune_gs(params, optimizers, state, step, is_surfel_phase)
             if self.verbose or is_surfel_phase:  # Always log surfel pruning
                 print(
                     f"Step {step}: {num_prune} {target_type} pruned. Now having {len(params['means'])} {target_type}."
@@ -275,6 +275,22 @@ class GESStrategy(Strategy):
             
             # Clean up optimizer states to remove any stale entries
             self._clean_optimizer_states(model)
+            
+            # FIX: Sync model.surfel_radii_cache with the state's cache after
+            # densification changes the surfel count. The gsplat ops (split,
+            # duplicate, remove) update tensors in the state dict, but
+            # model.surfel_radii_cache is a separate registered buffer that
+            # was never resized. This caused an IndexError at step 10k when
+            # execute_discard_phase tried to mask a stale-sized cache
+            # (e.g. [4817]) with the current surfel opacity mask (e.g. [4925]).
+            if is_surfel_phase:
+                new_count = len(params["means"])
+                if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
+                    model.surfel_radii_cache = state["surfel_radii_cache"].clone()
+                else:
+                    model.surfel_radii_cache = torch.zeros(
+                        new_count, device=model.device
+                    )
 
     @torch.no_grad()
     def _grow_gs(
@@ -283,12 +299,19 @@ class GESStrategy(Strategy):
         optimizers: dict[str, torch.optim.Optimizer],
         state: dict[str, Any],
         step: int,
+        is_surfel: bool = False,
     ):
         count = state["count"]
         grads = state["grad2d"] / count.clamp_min(1)
         is_grad_high = grads > self.grow_grad2d
+        
+        # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
+        # projection and receives 0 gradient. It never shrinks during optimization.
+        # If we include it in the max() check, it will falsely label surfels as "not small"
+        # and prevent duplication, forcing splits instead.
+        scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
         is_small = (
-            torch.exp(params["scales"]).max(dim=-1).values
+            torch.exp(scales_to_check).max(dim=-1).values
             <= self.grow_scale3d * state["scene_scale"]
         )
         is_duplicate = is_grad_high & is_small
@@ -324,11 +347,17 @@ class GESStrategy(Strategy):
         optimizers: dict[str, torch.optim.Optimizer],
         state: dict[str, Any],
         step: int,
+        is_surfel: bool = False,
     ):
         is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
         if step > self.reset_every:
+            # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
+            # projection and receives 0 gradient. It never shrinks during optimization.
+            # If we include it in the max() check, it will falsely trigger the "too big"
+            # threshold and aggressively prune almost all surfels in the scene!
+            scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
             is_too_big = (
-                torch.exp(params["scales"]).max(dim=-1).values
+                torch.exp(scales_to_check).max(dim=-1).values
                 > self.prune_scale3d * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big

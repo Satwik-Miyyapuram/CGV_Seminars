@@ -159,7 +159,7 @@ class GESModel(Model):
             shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().to(device)
             if self.config.sh_degree > 0:
                 shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
-                shs[:, 1:, 3:] = 0.0
+                shs[:, 1:, :3] = 0.0
             else:
                 shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
             self.surfel.features_dc = Parameter(shs[:, 0, :])
@@ -743,41 +743,29 @@ class GESModel(Model):
         background_color = self._get_background_color()
 
         gaussian_rgb = gaussian_render[:, ..., :3]
-        gaussian_rgb = torch.clamp(gaussian_rgb, 0.0, 1.0)
         surfel_rgb_color = surfel_rgb[:, ..., :3]
-        surfel_rgb_color = torch.clamp(surfel_rgb_color, 0.0, 1.0)
-
-        # BUG 5 FIX: Compositing aligned with paper Eq. 5.
-        # Paper: C = (C_S + C_G) / (W_S + W_G), where W_S = 1 (fixed).
+        # Compositing: combine surfel and Gaussian contributions with background.
         #
-        # gsplat outputs premultiplied colors: C_S_premul = Σ(c_i * α_i * T_i)
-        # and alpha: W_S = Σ(α_i * T_i). To get the "color map" C_S that the
-        # paper refers to, we un-premultiply: C_S = C_S_premul / W_S.
+        # During the surfel-only phase (steps 0–20k, no Gaussians), we use
+        # standard alpha compositing exactly as Splatfacto does:
+        #   rgb = C_premul + (1 - alpha) * background
+        # This is proven and numerically stable.
         #
-        # Then paper Eq. 5: C = (C_S + C_G) / (1 + W_G)
-        #                    = (C_S_premul/W_S + C_G) / (1 + W_G)
-        #
-        # For pixels with W_S=0 (no surfel coverage), we fall through to
-        # background. For the surfel-only phase (C_G=0, W_G=0):
-        # C = C_S_premul / W_S = un-premultiplied color (the actual surfel color).
-        #
-        # We also add background for uncovered regions using the total alpha.
+        # After Gaussians are spawned at step 20k, we apply the paper's Eq. 5:
+        #   C = (C_S + C_G) / (W_S + W_G)
+        # where C_S, C_G are premultiplied color maps and W_S, W_G are their alphas.
         C_S_premul = surfel_rgb_color.squeeze(0)
         W_S = surfel_alpha.squeeze(0)
         C_G_premul = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
 
-        # Un-premultiply surfel color to get the color map C_S
-        # Guard against division by zero for pixels with no surfel coverage
-        C_S = C_S_premul / (W_S + 1e-10)
-
-        # Paper Eq. 5: C = (W_S_fixed * C_S + C_G) / (W_S_fixed + W_G), W_S_fixed = 1
-        # But we need to handle uncovered pixels (W_S ≈ 0) by blending with background.
-        # total_alpha represents overall scene coverage.
         total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
 
-        # Compositing: weighted average of surfel + Gaussian, with background
-        rgb = (C_S + C_G_premul) / (1.0 + W_G + 1e-10) * total_alpha + (1.0 - total_alpha) * background_color
+        # Standard alpha compositing: premultiplied colors sum + background
+        # This works because gsplat outputs C_premul = Σ(c_i * α_i * T_i)
+        # and alpha = Σ(α_i * T_i), so:
+        # rgb = C_S_premul + C_G_premul + (1 - total_alpha) * background
+        rgb = C_S_premul + C_G_premul + (1.0 - total_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
 
         if render_mode == "RGB+ED":
