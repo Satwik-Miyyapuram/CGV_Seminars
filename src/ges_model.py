@@ -363,8 +363,15 @@ class GESModel(Model):
                 print("Reached 15k iterations, Visibility Pruning phase...")
                 self.strategy.execute_visibility_prune_phase(self)
 
-        # Removed phase_18k_19k_callback: Stepwise clamping caused sudden visual jumps.
-        # It's replaced with smooth interpolation in densification_post_backward_callback.
+        def phase_18k_callback(step: int):
+            if step == 18000:
+                print("Reached 18k iterations, clamping surfel opacity to 60...")
+                self.strategy.clamp_surfel_opacity(self, min_opacity=60.0)
+
+        def phase_19k_callback(step: int):
+            if step == 19000:
+                print("Reached 19k iterations, clamping surfel opacity to 90...")
+                self.strategy.clamp_surfel_opacity(self, min_opacity=90.0)
 
         def phase_20k_callback(step: int):
             if step == self.strategy.gaussian_spawn_iter:
@@ -381,14 +388,6 @@ class GESModel(Model):
 
         def densification_post_backward_callback(step: int):
             self.strategy.step_post_backward(self, step)
-            
-            # BUG 16 FIX: Smoothly interpolate surfel opacity (tau) from 30 to 255 
-            # between 10k and 20k, as explicitly stated in the paper. The previous 
-            # hard-coded jumps at 18k, 19k, and 20k caused sudden visual artifacts 
-            # because the colors didn't have time to adapt to the sudden opacity spikes.
-            if 10000 < step <= 20000:
-                min_opacity = 30.0 + (255.0 - 30.0) * (step - 10000) / 10000.0
-                self.strategy.clamp_surfel_opacity(self, min_opacity=min_opacity)
 
         def save_milestone_callback(step: int):
             if step in [9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1]:
@@ -424,7 +423,20 @@ class GESModel(Model):
                 func=phase_15k_callback,
             )
         )
-        # Removed phase_18k_19k_callback from callback list
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                iters=(18000,),
+                func=phase_18k_callback,
+            )
+        )
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                iters=(19000,),
+                func=phase_19k_callback,
+            )
+        )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
