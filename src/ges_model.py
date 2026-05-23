@@ -41,9 +41,15 @@ class GESModelConfig(SplatfactoModelConfig):
     _target: type = field(default_factory=lambda: GESModel)
     output_depth_during_training: bool = True  # since we need surfel depth to cull gaussians during
     # rendering, we need to output depth during training as well.
-    use_dynamic_epsilon: bool = True  # Use dynamic epsilon for depth offset based on Gaussian scales
-    surfel_visibility_threshold_real: int = 16  # Threshold for surfel visibility pruning (real scenes)
-    surfel_visibility_threshold_synthetic: int = 4  # Threshold for surfel visibility pruning (synthetic scenes)
+    use_dynamic_epsilon: bool = (
+        True  # Use dynamic epsilon for depth offset based on Gaussian scales
+    )
+    surfel_visibility_threshold_real: int = (
+        16  # Threshold for surfel visibility pruning (real scenes)
+    )
+    surfel_visibility_threshold_synthetic: int = (
+        4  # Threshold for surfel visibility pruning (synthetic scenes)
+    )
     use_real_scene: bool = True  # Whether to use real scene visibility threshold
 
 
@@ -129,7 +135,7 @@ class GESModel(Model):
         self.register_buffer("saved_gaussian_features_dc", torch.zeros((0, 3)))
         self.register_buffer("saved_gaussian_features_rest", torch.zeros((0, 15, 3)))
         self.register_buffer("surfel_radii_cache", torch.zeros((0,)))
-        
+
         self.l1_loss_history = []  # For plotting loss curve at the end
 
     def populate_modules(self):
@@ -150,7 +156,7 @@ class GESModel(Model):
                 scale_init=self.config.random_scale,
                 sh_degree=self.config.sh_degree,
             )
-            
+
         device = self.surfel.means.device  # Assuming all parameters are on the same device, we can use this for convenience later when spawning Gaussians on the same device.
         num_points = self.surfel.means.shape[0]
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -168,8 +174,12 @@ class GESModel(Model):
                 shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
             self.surfel.features_dc = Parameter(shs[:, 0, :])
             self.surfel.features_rest = Parameter(shs[:, 1:, :])
-            print(f"[INIT] Surfel features_dc range: [{shs[:, 0, :].min().item():.4f}, {shs[:, 0, :].max().item():.4f}]")
-            print(f"[INIT] Surfel seed colors range: [{self.seed_points[1].min().item():.1f}, {self.seed_points[1].max().item():.1f}]")
+            print(
+                f"[INIT] Surfel features_dc range: [{shs[:, 0, :].min().item():.4f}, {shs[:, 0, :].max().item():.4f}]"
+            )
+            print(
+                f"[INIT] Surfel seed colors range: [{self.seed_points[1].min().item():.1f}, {self.seed_points[1].max().item():.1f}]"
+            )
         else:
             self.surfel.features_dc = Parameter(torch.rand((num_points, 3)))
             self.surfel.features_rest = Parameter(torch.rand((num_points, dim_sh - 1, 3)))
@@ -342,28 +352,76 @@ class GESModel(Model):
             if step == self.strategy.surfel_density_stop_iter:
                 print(f"Reached {step} iterations, entering discard phase...")
                 opacities = torch.sigmoid(self.surfel.opacities.detach())
-                # Squeeze might make it scalar if there's 1 point, so we reshape to 1D
-                # Keep only high-confidence surfels, discard low-opacity ones as Gaussian seeds
-                # The paper uses 0.8, but without explicit opacity regularization, our opacities 
-                # naturally sit much lower. 0.8 often discards 99.9% of the scene.
-                # We use 0.1, and guarantee we keep at least 50% of the surfels.
-                mask = (opacities >= 0.1).view(-1)
 
-                # If the threshold drops too much, keep the top 50% based on median
-                if mask.sum() < len(mask) * 0.5:
-                    median_val = torch.median(opacities).item()
-                    mask = (opacities >= median_val).view(-1)
-                    print(f"Warning: Opacity threshold 0.1 discarded too much! Falling back to median threshold ({median_val:.4f}).")
+                # Perform ablation renders before pruning
+                if hasattr(self, "fixed_camera"):
+                    try:
+                        import os
+
+                        import numpy as np
+                        from PIL import Image, ImageDraw
+
+                        os.makedirs("web_assets/ablation_10k", exist_ok=True)
+
+                        original_opacities_data = self.surfel.opacities.data.clone()
+                        bg = self.config.background_color
+                        self.config.background_color = "white"
+
+                        was_training = self.training
+                        self.eval()
+
+                        for thresh in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]:
+                            with torch.no_grad():
+                                temp_mask = (opacities >= thresh).view(-1)
+
+                                # Apply temporary mask by pushing opacities of pruned points to -100
+                                temp_data = original_opacities_data.clone()
+                                temp_data[~temp_mask] = -100.0
+                                self.surfel.opacities.data.copy_(temp_data)
+
+                                outputs = self.get_outputs(self.fixed_camera)
+                                rgb = outputs["rgb"].detach().cpu().numpy()
+
+                                rgb_img = (rgb * 255).astype(np.uint8)
+                                img = Image.fromarray(rgb_img)
+                                draw = ImageDraw.Draw(img)
+                                draw.text(
+                                    (10, 10),
+                                    f"Thresh: {thresh:.1f} (Keep: {temp_mask.sum().item()})",
+                                    fill=(0, 0, 0),
+                                )
+                                img.save(f"web_assets/ablation_10k/thresh_{thresh:.1f}.png")
+
+                        if was_training:
+                            self.train()
+
+                        # Restore
+                        self.surfel.opacities.data.copy_(original_opacities_data)
+                        self.config.background_color = bg
+                        print("Saved 10k ablation renders to web_assets/ablation_10k/")
+                    except Exception as e:
+                        print(f"Failed to generate ablation renders: {e}")
+
+                # Final pruning logic: use the median value to keep exactly 50%
+                median_val = torch.median(opacities).item()
+                mask = (opacities >= median_val).view(-1)
+                print(f"Using median opacity {median_val:.4f} as the pruning threshold.")
 
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
                 self.saved_gaussian_seeds = self.surfel.means.detach()[discard_mask].clone()
-                self.saved_gaussian_features_dc = self.surfel.features_dc.detach()[discard_mask].clone()
-                self.saved_gaussian_features_rest = self.surfel.features_rest.detach()[discard_mask].clone()
+                self.saved_gaussian_features_dc = self.surfel.features_dc.detach()[
+                    discard_mask
+                ].clone()
+                self.saved_gaussian_features_rest = self.surfel.features_rest.detach()[
+                    discard_mask
+                ].clone()
                 print(
                     f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels."
                 )
-                print(f"[10K] Surfel features_dc range after discard: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]")
+                print(
+                    f"[10K] Surfel features_dc range after discard: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]"
+                )
                 self.strategy.execute_discard_phase(self, mask)
                 self.strategy.clamp_surfel_opacity(self, min_opacity=30.0)
                 # Freeze surfel opacity from further optimization (paper: "keep w_i from optimization")
@@ -392,7 +450,9 @@ class GESModel(Model):
                 if isinstance(self.saved_gaussian_seeds, torch.Tensor):
                     self.strategy.spawn_gaussians_from_saved_seeds(self, self.saved_gaussian_seeds)
                 else:
-                    print("Warning: Saved gaussian seeds not found or invalid. Skipping Gaussian spawning.")
+                    print(
+                        "Warning: Saved gaussian seeds not found or invalid. Skipping Gaussian spawning."
+                    )
                 self.strategy.freeze_surfel_geometry(self)
 
         def pre_backward_callback(step: int):
@@ -410,11 +470,13 @@ class GESModel(Model):
         def save_loss_graph_callback(step: int):
             if step == 29999 and len(self.l1_loss_history) > 0:
                 try:
-                    import matplotlib.pyplot as plt
                     import os
+
+                    import matplotlib.pyplot as plt
+
                     os.makedirs("web_assets", exist_ok=True)
                     steps, losses = zip(*self.l1_loss_history)
-                    
+
                     # Compute Exponential Moving Average (EMA) for smoother plotting
                     alpha = 0.05
                     ema_losses = []
@@ -422,12 +484,16 @@ class GESModel(Model):
                     for loss in losses:
                         current_ema = alpha * loss + (1 - alpha) * current_ema
                         ema_losses.append(current_ema)
-                        
+
                     plt.figure(figsize=(10, 5))
-                    plt.plot(steps, ema_losses, label="L1 Loss (Smoothed)", color='tab:blue')
-                    plt.plot(steps, losses, alpha=0.15, color='tab:blue', label="Raw Batch Loss")
-                    plt.axvline(x=10000, color='r', linestyle='--', alpha=0.5, label='Discard Phase')
-                    plt.axvline(x=20000, color='g', linestyle='--', alpha=0.5, label='Gaussian Spawn')
+                    plt.plot(steps, ema_losses, label="L1 Loss (Smoothed)", color="tab:blue")
+                    plt.plot(steps, losses, alpha=0.15, color="tab:blue", label="Raw Batch Loss")
+                    plt.axvline(
+                        x=10000, color="r", linestyle="--", alpha=0.5, label="Discard Phase"
+                    )
+                    plt.axvline(
+                        x=20000, color="g", linestyle="--", alpha=0.5, label="Gaussian Spawn"
+                    )
                     plt.xlabel("Iterations")
                     plt.ylabel("L1 Loss")
                     plt.title("Training L1 Loss Curve")
@@ -435,44 +501,63 @@ class GESModel(Model):
                     plt.grid(True, alpha=0.3)
                     plt.savefig("web_assets/loss_curve.png", dpi=150)
                     plt.close()
-                    print(f"Saved smoothed loss curve to web_assets/loss_curve.png")
+                    print("Saved smoothed loss curve to web_assets/loss_curve.png")
                 except Exception as e:
                     print(f"Failed to plot loss curve: {e}")
 
         def save_fixed_view_callback(step: int):
-            target_steps = [1000, 5000, 9999, 10001, 14999, 15001, 17999, 18001, 18999, 19001, 19999, 20001, 25000, 29999]
-            if step in target_steps and hasattr(self, 'fixed_camera'):
+            target_steps = [
+                1000,
+                5000,
+                9999,
+                10001,
+                14999,
+                15001,
+                17999,
+                18001,
+                18999,
+                19001,
+                19999,
+                20001,
+                25000,
+                29999,
+            ]
+            if step in target_steps and hasattr(self, "fixed_camera"):
                 try:
                     was_training = self.training
                     self.eval()
                     with torch.no_grad():
                         # Save current state to avoid modifying it
                         bg = self.config.background_color
-                        self.config.background_color = "white" # Force white background for consistency
-                        
+                        self.config.background_color = (
+                            "white"  # Force white background for consistency
+                        )
+
                         outputs = self.get_outputs(self.fixed_camera)
                         rgb = outputs["rgb"].detach().cpu().numpy()
-                        
-                        self.config.background_color = bg # Restore
-                        
+
+                        self.config.background_color = bg  # Restore
+
                         import os
-                        from PIL import Image, ImageDraw, ImageFont
+
                         import numpy as np
+                        from PIL import Image, ImageDraw
+
                         os.makedirs("web_assets/progress", exist_ok=True)
                         rgb_img = (rgb * 255).astype(np.uint8)
                         img = Image.fromarray(rgb_img)
-                        
+
                         # Add step text
                         draw = ImageDraw.Draw(img)
                         text = f"Step {step}"
                         # Try to draw text, ignore if font fails
                         draw.text((10, 10), text, fill=(0, 0, 0))
-                        
+
                         img.save(f"web_assets/progress/step_{step}.png")
-                        
+
                     if was_training:
                         self.train()
-                        
+
                     # At the end, composite them
                     if step == 29999:
                         images = []
@@ -480,21 +565,23 @@ class GESModel(Model):
                             path = f"web_assets/progress/step_{s}.png"
                             if os.path.exists(path):
                                 images.append(Image.open(path))
-                        
+
                         if images:
                             # Create a grid. Calculate rows and cols.
                             cols = 4
                             rows = (len(images) + cols - 1) // cols
                             w, h = images[0].size
-                            composite = Image.new('RGB', (w * cols, h * rows), color='white')
-                            
+                            composite = Image.new("RGB", (w * cols, h * rows), color="white")
+
                             for i, img in enumerate(images):
                                 row = i // cols
                                 col = i % cols
                                 composite.paste(img, (col * w, row * h))
-                                
+
                             composite.save("web_assets/progression_composite.png")
-                            print(f"Saved progression composite to web_assets/progression_composite.png")
+                            print(
+                                "Saved progression composite to web_assets/progression_composite.png"
+                            )
                 except Exception as e:
                     print(f"Failed to save fixed view at step {step}: {e}")
 
@@ -564,7 +651,22 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(1000, 5000, 9999, 10001, 14999, 15001, 17999, 18001, 18999, 19001, 19999, 20001, 25000, 29999),
+                iters=(
+                    1000,
+                    5000,
+                    9999,
+                    10001,
+                    14999,
+                    15001,
+                    17999,
+                    18001,
+                    18999,
+                    19001,
+                    19999,
+                    20001,
+                    25000,
+                    29999,
+                ),
                 func=save_fixed_view_callback,
             )
         )
@@ -617,19 +719,25 @@ class GESModel(Model):
         if not isinstance(camera, Cameras):
             print("Called get_outputs with not a camera")
             return {}
-        
+
         # Log surfel and Gaussian counts (helpful for debugging eval)
         if not self.training:
-            print(f"[EVAL] Rendering with {self.surfel.means.shape[0]} surfels and {self.gaussian.means.shape[0]} Gaussians at step {self.step}")
-            print(f"[EVAL] Surfel features_dc range: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]")
+            print(
+                f"[EVAL] Rendering with {self.surfel.means.shape[0]} surfels and {self.gaussian.means.shape[0]} Gaussians at step {self.step}"
+            )
+            print(
+                f"[EVAL] Surfel features_dc range: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]"
+            )
             if self.gaussian.means.shape[0] > 0:
-                print(f"[EVAL] Gaussian features_dc range: [{self.gaussian.features_dc.min().item():.4f}, {self.gaussian.features_dc.max().item():.4f}]")
+                print(
+                    f"[EVAL] Gaussian features_dc range: [{self.gaussian.features_dc.min().item():.4f}, {self.gaussian.features_dc.max().item():.4f}]"
+                )
 
         if self.training:
             assert camera.shape[0] == 1, "Only one camera at a time"
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
             # Save the first training camera to render progress from a fixed view
-            if not hasattr(self, 'fixed_camera'):
+            if not hasattr(self, "fixed_camera"):
                 self.fixed_camera = camera.to("cpu")
         else:
             optimized_camera_to_world = camera.camera_to_worlds
@@ -775,7 +883,7 @@ class GESModel(Model):
             sampled_depths = torch.nn.functional.grid_sample(
                 surfel_depth_map, grid, mode="nearest", padding_mode="border", align_corners=False
             ).squeeze()  # [N]
-            
+
             # Compute dynamic epsilon based on Gaussian scales (as per paper Eq. 2-3)
             # ε_i = (1/D) * Σ(s_{i,j}) where D=3 (dimension) and s_{i,j} are axis lengths of scale
             with torch.no_grad():
@@ -785,7 +893,9 @@ class GESModel(Model):
                     # Average the three axis lengths for each Gaussian
                     delta = scale_magnitudes.mean(dim=1)  # [N]
                 else:
-                    delta = 0.05 * torch.ones(gaussian_crop.means.shape[0], device=gaussian_depths.device)
+                    delta = 0.05 * torch.ones(
+                        gaussian_crop.means.shape[0], device=gaussian_depths.device
+                    )
 
             valid_mask = gaussian_depths < sampled_depths + delta
 
@@ -844,22 +954,27 @@ class GESModel(Model):
                         surfel_radii = radii_tensor.max(dim=0).values
                     else:
                         surfel_radii = radii_tensor
-                    
+
                     state = self.strategy_state["surfels"]
                     # If this is the first step or we have just loaded a checkpoint, restore from self.surfel_radii_cache if available.
                     # Otherwise, initialize with zeros.
                     if "surfel_radii_cache" not in state or state["surfel_radii_cache"] is None:
-                        if self.surfel_radii_cache is not None and self.surfel_radii_cache.shape[0] == surfel_radii.shape[0]:
+                        if (
+                            self.surfel_radii_cache is not None
+                            and self.surfel_radii_cache.shape[0] == surfel_radii.shape[0]
+                        ):
                             state["surfel_radii_cache"] = self.surfel_radii_cache.clone()
                         else:
                             state["surfel_radii_cache"] = torch.zeros_like(surfel_radii)
-                    
+
                     # If there's a shape mismatch (e.g. from manual/external changes), resize to zeros
                     if state["surfel_radii_cache"].shape[0] != surfel_radii.shape[0]:
                         state["surfel_radii_cache"] = torch.zeros_like(surfel_radii)
-                    
+
                     # Accumulate maximum pixel-unit radii over all training steps (never zeroed out by strategy)
-                    state["surfel_radii_cache"] = torch.maximum(state["surfel_radii_cache"], surfel_radii)
+                    state["surfel_radii_cache"] = torch.maximum(
+                        state["surfel_radii_cache"], surfel_radii
+                    )
                     self.surfel_radii_cache = state["surfel_radii_cache"]
                 else:
                     surfel_radii = None
@@ -889,12 +1004,12 @@ class GESModel(Model):
         W_G = gaussian_alpha.squeeze(0)
 
         total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
-        
+
         # Paper Eq. 5: C = (C_S + C_G) / (W_S + W_G)
         # Here C_S and C_G in the paper text refer to the premultiplied colors.
         # This computes the weighted average of the unpremultiplied colors.
         combined_color = (C_S_premul + C_G_premul) / (W_S + W_G + 1e-5)
-        
+
         # Then we composite this combined color over the background using total_alpha
         rgb = combined_color * total_alpha + (1.0 - total_alpha) * background_color
         rgb = torch.clamp(rgb, 0.0, 1.0)
@@ -911,28 +1026,28 @@ class GESModel(Model):
             depth = None
         if background_color.shape[0] == 3 and not self.training:
             background_color = background_color.expand(height, width, 3)
-        
+
         # Add annotation text during evaluation
         if not self.training:
             try:
-                from PIL import Image, ImageDraw, ImageFont
                 import numpy as np
-                
+                from PIL import Image, ImageDraw
+
                 # Convert tensor to PIL Image
                 rgb_np = (rgb.detach().cpu().numpy() * 255).astype(np.uint8)
                 img = Image.fromarray(rgb_np)
                 draw = ImageDraw.Draw(img)
-                
+
                 # Add text label
                 text = f"Render (Surfels: {self.surfel.means.shape[0]}, Gaussians: {self.gaussian.means.shape[0]})"
                 draw.text((10, 10), text, fill=(255, 255, 255))
-                
+
                 # Convert back to tensor
                 rgb = torch.from_numpy(np.array(img).astype(np.float32) / 255.0).to(rgb.device)
             except Exception as e:
                 # If text rendering fails, just continue without annotation
                 print(f"Warning: Could not add text annotation: {e}")
-        
+
         return {
             "rgb": rgb,
             "depth": depth,  # type: ignore
@@ -1086,10 +1201,10 @@ class GESModel(Model):
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
-        
+
         if self.training and self.step % 100 == 0:
             self.l1_loss_history.append((self.step, Ll1.item()))
-            
+
         simloss = 1 - self.ssim(
             gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...]
         )
