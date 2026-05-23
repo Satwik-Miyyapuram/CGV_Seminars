@@ -78,6 +78,7 @@ def main():
             colmap_path=colmap_path,
             load_3D_points=True,
             downscale_factor=args.downscale_factor,
+            downscale_rounding_mode="round",
         )
         bg_color = "random" if args.background_color == "auto" else args.background_color
         use_real = True if args.use_real_scene == "auto" else (args.use_real_scene == "true")

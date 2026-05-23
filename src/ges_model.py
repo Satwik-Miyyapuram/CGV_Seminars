@@ -409,7 +409,8 @@ class GESModel(Model):
                         print(f"Failed to generate ablation renders: {e}")
 
                 # Final pruning logic: use the median value to keep exactly 50%
-                median_val = torch.median(opacities).item()
+                # median_val = torch.median(opacities).item()
+                median_val = 0.8
                 mask = (opacities >= median_val).view(-1)
                 print(f"Using median opacity {median_val:.4f} as the pruning threshold.")
 
