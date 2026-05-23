@@ -571,14 +571,30 @@ class GESStrategy(Strategy):
         import math
         safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
 
-        # Initialize quats to identity [1, 0, 0, 0] as in standard 3DGS
-        quats = torch.zeros((num_new_gaussians, 4), device=device)
-        quats[:, 0] = 1.0
+        # Get saved scales if they exist, otherwise fallback to global safe scale
+        if hasattr(model, "saved_gaussian_scales") and model.saved_gaussian_scales.shape[0] == num_new_gaussians:
+            scales = model.saved_gaussian_scales.clone()
+            # Constrain the Z-axis scale (which is ignored for 2D surfels but active for 3D Gaussians)
+            # to be thin, preventing massive vertical spikes/fog.
+            z_scale = torch.clamp(scales[:, 2], max=safe_scale)
+            scales = scales.clone()
+            scales[:, 2] = z_scale
+        else:
+            print("Warning: saved_gaussian_scales not found or mismatched size. Falling back to global safe scale.")
+            scales = torch.ones((num_new_gaussians, 3), device=device) * safe_scale
+
+        # Get saved quats if they exist, otherwise fallback to identity [1, 0, 0, 0]
+        if hasattr(model, "saved_gaussian_quats") and model.saved_gaussian_quats.shape[0] == num_new_gaussians:
+            quats = model.saved_gaussian_quats.clone()
+        else:
+            print("Warning: saved_gaussian_quats not found or mismatched size. Falling back to identity rotation.")
+            quats = torch.zeros((num_new_gaussians, 4), device=device)
+            quats[:, 0] = 1.0
         
         new_data = {
             "means": saved_gaussian_seeds.clone(),
             "quats": quats,
-            "scales": torch.ones((num_new_gaussians, 3), device=device) * safe_scale,
+            "scales": scales,
             "opacities": torch.logit(
                 0.1 * torch.ones((num_new_gaussians, 1), device=device)
             ),  # Initialize opacities to 0.1 as in standard 3DGS

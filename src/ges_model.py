@@ -134,6 +134,8 @@ class GESModel(Model):
         )  # buffer to save discarded surfel means for gaussian spawning
         self.register_buffer("saved_gaussian_features_dc", torch.zeros((0, 3)))
         self.register_buffer("saved_gaussian_features_rest", torch.zeros((0, 15, 3)))
+        self.register_buffer("saved_gaussian_scales", torch.zeros((0, 3)))
+        self.register_buffer("saved_gaussian_quats", torch.zeros((0, 4)))
         self.register_buffer("surfel_radii_cache", torch.zeros((0,)))
 
         self.l1_loss_history = []  # For plotting loss curve at the end
@@ -299,6 +301,10 @@ class GESModel(Model):
             if "saved_gaussian_features_rest" in state_dict:
                 rest_shape = state_dict["saved_gaussian_features_rest"].shape
                 self.saved_gaussian_features_rest = torch.zeros(*rest_shape, device=self.device)
+            if "saved_gaussian_scales" in state_dict:
+                self.saved_gaussian_scales = torch.zeros((num_seeds, 3), device=self.device)
+            if "saved_gaussian_quats" in state_dict:
+                self.saved_gaussian_quats = torch.zeros((num_seeds, 4), device=self.device)
         if "surfel_radii_cache" in state_dict:
             num_radii = state_dict["surfel_radii_cache"].shape[0]
             self.surfel_radii_cache = torch.zeros((num_radii,), device=self.device)
@@ -416,6 +422,8 @@ class GESModel(Model):
                 self.saved_gaussian_features_rest = self.surfel.features_rest.detach()[
                     discard_mask
                 ].clone()
+                self.saved_gaussian_scales = self.surfel.scales.detach()[discard_mask].clone()
+                self.saved_gaussian_quats = self.surfel.quats.detach()[discard_mask].clone()
                 print(
                     f"Discarding {discard_mask.sum().item()} surfels, keeping {mask.sum().item()} surfels."
                 )
