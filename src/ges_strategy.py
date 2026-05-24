@@ -4,6 +4,11 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from gsplat.strategy.base import Strategy
+from training_schedule import (
+    SURFEL_DENSIFICATION_STOP,
+    VISIBILITY_PRUNE_STEP,
+    GAUSSIAN_SPAWN_STEP,
+)
 from gsplat.strategy.ops import _update_param_with_optimizer, duplicate, remove, reset_opa, split
 from nerfstudio.utils.math import random_quat_tensor
 from nerfstudio.utils.spherical_harmonics import num_sh_bases
@@ -37,8 +42,8 @@ class GESStrategy(Strategy):
     # from gaussian_spawn_iter (20k) to refine_stop_iter_gaussian (30k).
     # The old single refine_stop_iter=15000 blocked ALL densification after
     # 15k, meaning Gaussians spawned at 20k could never be split/duplicated.
-    refine_stop_iter: int = 15_000  # kept for surfel phase (but surfel phase ends at 10k anyway)
-    refine_stop_iter_gaussian: int = 30_000  # NEW: allow Gaussian densification until training ends
+    refine_stop_iter: int = VISIBILITY_PRUNE_STEP  # kept for surfel phase
+    refine_stop_iter_gaussian: int = 50000  # allow Gaussian densification until training ends
     reset_every: int = 3000
     refine_every: int = 100
     verbose: bool = False
@@ -48,9 +53,9 @@ class GESStrategy(Strategy):
     # Splatfacto default (use_absgrad=True) and gsplat DefaultStrategy.
     absgrad: bool = True
 
-    surfel_density_stop_iter: int = 10000
-    surfel_prune_iter: int = 15000
-    gaussian_spawn_iter: int = 20000
+    surfel_density_stop_iter: int = SURFEL_DENSIFICATION_STOP
+    surfel_prune_iter: int = VISIBILITY_PRUNE_STEP
+    gaussian_spawn_iter: int = GAUSSIAN_SPAWN_STEP
     
     # Dynamic culling parameters
     surfel_visibility_threshold_real: float = 16.0  # Pixel threshold for real scenes
@@ -328,13 +333,14 @@ class GESStrategy(Strategy):
         # CRITICAL UPDATE: We ONLY force split solid objects (opacity > 0.8). If we 
         # force split fuzzy floaters, they exponentially explode into hundreds of 
         # thousands of garbage primitives! Floaters should just hit the limit and die.
-        scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
-        is_solid = torch.sigmoid(params["opacities"].flatten()) > 0.8
-        is_too_big_for_comfort = (
-            torch.exp(scales_to_check).max(dim=-1).values
-            > self.prune_scale3d * state["scene_scale"] * 0.9
-        ) & is_solid
-        is_split = (is_grad_high & ~is_small) | is_too_big_for_comfort
+        # scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
+        # is_solid = torch.sigmoid(params["opacities"].flatten()) > 0.8
+        # is_too_big_for_comfort = (
+        #     torch.exp(scales_to_check).max(dim=-1).values
+        #     > self.prune_scale3d * state["scene_scale"] * 0.9
+        # ) & is_solid
+        is_split = (is_grad_high & ~is_small)
+        # is_split |= state["radii"] > self.grow_scale2d
         n_split = is_split.sum().item()
 
         if num_duplicates > 0:

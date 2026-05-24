@@ -32,6 +32,18 @@ from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from ges_strategy import GESStrategy
+from training_schedule import (
+    SURFEL_DENSIFICATION_STOP,
+    SURFEL_PHASE_END,
+    VISIBILITY_PRUNE_STEP,
+    CLAMP_18K_STEP,
+    CLAMP_19K_STEP,
+    GAUSSIAN_SPAWN_STEP,
+    LOSS_GRAPH_STEP,
+    FIXED_VIEW_STEPS,
+    MILESTONE_STEPS,
+    COMPOSITE_ASSEMBLY_STEP,
+)
 
 
 @dataclass
@@ -262,9 +274,9 @@ class GESModel(Model):
 
     def get_densification_params(self, step) -> dict[str, Parameter] | None:
         """Get the parameters to be used for densification based on the current step."""
-        if step <= 10000:
+        if step <= SURFEL_DENSIFICATION_STOP:
             return self.get_surfel_param_dict()
-        elif step > 20000:
+        elif step > SURFEL_PHASE_END:
             return self.get_gaussian_param_dict()
         return None
 
@@ -313,7 +325,7 @@ class GESModel(Model):
 
     def get_densification_optimizers(self, step) -> dict[str, torch.optim.Optimizer] | None:
         """Get the optimizers to be used for densification based on the current step."""
-        if step <= 20000:  # Surfel phase: densification through step 20k geometry freeze
+        if step <= SURFEL_PHASE_END:  # Surfel phase: densification through step 20k geometry freeze
             return {
                 "means": self.optimizers["surfel_means"],
                 "quats": self.optimizers["surfel_quats"],
@@ -322,7 +334,7 @@ class GESModel(Model):
                 "features_dc": self.optimizers["surfel_features_dc"],
                 "features_rest": self.optimizers["surfel_features_rest"],
             }
-        elif step > 20000:
+        elif step > SURFEL_PHASE_END:
             return {
                 "means": self.optimizers["gaussian_means"],
                 "quats": self.optimizers["gaussian_quats"],
@@ -438,17 +450,17 @@ class GESModel(Model):
                 print("Frozen surfel opacity from optimization.")
 
         def phase_15k_callback(step: int):
-            if step == 15000:
+            if step == VISIBILITY_PRUNE_STEP:
                 print("Reached 15k iterations, Visibility Pruning phase...")
                 self.strategy.execute_visibility_prune_phase(self)
 
         def phase_18k_callback(step: int):
-            if step == 18000:
+            if step == CLAMP_18K_STEP:
                 print("Reached 18k iterations, clamping surfel opacity to 60...")
                 self.strategy.clamp_surfel_opacity(self, min_opacity=60.0)
 
         def phase_19k_callback(step: int):
-            if step == 19000:
+            if step == CLAMP_19K_STEP:
                 print("Reached 19k iterations, clamping surfel opacity to 90...")
                 self.strategy.clamp_surfel_opacity(self, min_opacity=90.0)
 
@@ -471,13 +483,13 @@ class GESModel(Model):
             self.strategy.step_post_backward(self, step)
 
         def save_milestone_callback(step: int):
-            if step in [9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1]:
+            if step in MILESTONE_STEPS:
                 filename = f"milestone_{step}.pth"
                 torch.save(self.state_dict(), filename)
                 print(f"Saved model state at milestone iteration {step} to {filename}")
 
         def save_loss_graph_callback(step: int):
-            if step == 29999 and len(self.l1_loss_history) > 0:
+            if step == LOSS_GRAPH_STEP and len(self.l1_loss_history) > 0:
                 try:
                     import os
 
@@ -498,10 +510,10 @@ class GESModel(Model):
                     plt.plot(steps, ema_losses, label="L1 Loss (Smoothed)", color="tab:blue")
                     plt.plot(steps, losses, alpha=0.15, color="tab:blue", label="Raw Batch Loss")
                     plt.axvline(
-                        x=10000, color="r", linestyle="--", alpha=0.5, label="Discard Phase"
+                        x=SURFEL_DENSIFICATION_STOP, color="r", linestyle="--", alpha=0.5, label="Discard Phase"
                     )
                     plt.axvline(
-                        x=20000, color="g", linestyle="--", alpha=0.5, label="Gaussian Spawn"
+                        x=GAUSSIAN_SPAWN_STEP, color="g", linestyle="--", alpha=0.5, label="Gaussian Spawn"
                     )
                     plt.xlabel("Iterations")
                     plt.ylabel("L1 Loss")
@@ -515,22 +527,7 @@ class GESModel(Model):
                     print(f"Failed to plot loss curve: {e}")
 
         def save_fixed_view_callback(step: int):
-            target_steps = [
-                1000,
-                5000,
-                9999,
-                10001,
-                14999,
-                15001,
-                17999,
-                18001,
-                18999,
-                19001,
-                19999,
-                20001,
-                25000,
-                29999,
-            ]
+            target_steps = FIXED_VIEW_STEPS
             if step in target_steps and hasattr(self, "fixed_camera"):
                 try:
                     was_training = self.training
@@ -568,7 +565,7 @@ class GESModel(Model):
                         self.train()
 
                     # At the end, composite them
-                    if step == 29999:
+                    if step == COMPOSITE_ASSEMBLY_STEP:
                         images = []
                         for s in target_steps:
                             path = f"web_assets/progress/step_{s}.png"
@@ -611,71 +608,56 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(10000,),
+                iters=(SURFEL_DENSIFICATION_STOP,),
                 func=phase_10k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(15000,),
+                iters=(VISIBILITY_PRUNE_STEP,),
                 func=phase_15k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(18000,),
+                iters=(CLAMP_18K_STEP,),
                 func=phase_18k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(19000,),
+                iters=(CLAMP_19K_STEP,),
                 func=phase_19k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(20000,),
+                iters=(GAUSSIAN_SPAWN_STEP,),
                 func=phase_20k_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(9999, 10001, 15000 - 1, 15000 + 1, 17500, 20000 - 1, 20000 + 1),
+                iters=tuple(MILESTONE_STEPS),
                 func=save_milestone_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(29999,),
+                iters=(LOSS_GRAPH_STEP,),
                 func=save_loss_graph_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(
-                    1000,
-                    5000,
-                    9999,
-                    10001,
-                    14999,
-                    15001,
-                    17999,
-                    18001,
-                    18999,
-                    19001,
-                    19999,
-                    20001,
-                    25000,
-                    29999,
-                ),
+                iters=tuple(FIXED_VIEW_STEPS),
                 func=save_fixed_view_callback,
             )
         )
@@ -945,7 +927,7 @@ class GESModel(Model):
             gaussian_info = None
         self.info = {"surfels": surfel_info, "gaussians": gaussian_info}
         if self.training:
-            if self.step <= 15000:
+            if self.step <= VISIBILITY_PRUNE_STEP:
                 if surfel_info is not None:
                     # BUG 7 FIX: 2DGS rasterization returns radii as [C, N, 2]
                     # (two axis-aligned bounding-box radii per surfel per camera).
