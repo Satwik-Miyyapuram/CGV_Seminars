@@ -101,7 +101,7 @@ class Surfel(torch.nn.Module):
         dim_sh = num_sh_bases(sh_degree)
         features_dc = Parameter(torch.zeros((num_points, 3)))
         features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3)))  # For future use
-        opacities = Parameter(torch.zeros((num_points, 1)))
+        opacities = Parameter(torch.ones((num_points, 1)) * 0.1)
         return cls(means, quats, scales, opacities, features_dc, features_rest)
 
 
@@ -424,9 +424,9 @@ class GESModel(Model):
                     except Exception as e:
                         print(f"Failed to generate ablation renders: {e}")
 
-                # Final pruning logic: use opacity < 0.8 as the threshold.
-                # Since opacities here is already passed through sigmoid, this checks opacity < 80%.
-                thresh_val = 0.8
+                # Final pruning logic: use opacity < 0.9 as the threshold.
+                # Since opacities here is already passed through sigmoid, this checks opacity < 90%.
+                thresh_val = torch.Sigmoid(torch.tensor(0.8)).item()
                 mask = (opacities >= thresh_val).view(-1)
                 print(f"Using opacity threshold {thresh_val:.5f} for pruning.")
 

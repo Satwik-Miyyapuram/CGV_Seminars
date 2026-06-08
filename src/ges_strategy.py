@@ -32,12 +32,12 @@ class GESStrategy(Strategy):
     and produces significantly better densification decisions.
     """
 
-    prune_opa: float = 0.005
+    prune_opa: float = 0.01
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
-    prune_scale3d: float = 0.1
-    prune_scale2d: float = 0.15
+    prune_scale3d: float = 0.05
+    prune_scale2d: float = 0.1
     refine_start_iter: int = 500
     # BUG 2 FIX: Separate stop iterations per phase. Surfel densification
     # stops at surfel_density_stop_iter (10k), Gaussian densification runs
@@ -62,7 +62,7 @@ class GESStrategy(Strategy):
     gaussian_spawn_iter: int = GAUSSIAN_SPAWN_STEP
 
     # Dynamic culling parameters
-    surfel_visibility_threshold_real: float = 16.0  # Pixel threshold for real scenes
+    surfel_visibility_threshold_real: float = 24.0  # Pixel threshold for real scenes
     surfel_visibility_threshold_synthetic: float = 4.0  # Pixel threshold for synthetic scenes
     use_real_scene: bool = True  # Whether using real scene threshold
 
@@ -163,14 +163,18 @@ class GESStrategy(Strategy):
 
         # For 2DGS (surfel) rasterization, radii shape is [C, N, 2] (two axis-
         # aligned bounding-box radii). For standard 3DGS, it's [C, N].
-        # The .all(dim=-1) collapses the trailing dim: [C,N,2] -> [C,N] (checks
-        # both radii > 0). For [C,N] it would wrongly collapse N, but gsplat's
-        # own DefaultStrategy uses the same pattern (line 257), so this is the
-        # canonical approach for 2DGS radii.
-        sel = (info["radii"] > 0.0).all(dim=-1)  # [C, N]
+        # We need to collapse the radius dimension(s) to [C, N].
+        if info["radii"].dim() == 3:
+            # [C, N, 2] -> check both radii > 0
+            sel = (info["radii"] > 0.0).all(dim=-1)
+            radii = info["radii"][sel].max(dim=-1).values
+        else:
+            # [C, N]
+            sel = info["radii"] > 0.0
+            radii = info["radii"][sel]
+
         gs_ids = torch.where(sel)[1]  # [nnz]
         grads = grads[sel]  # [nnz, 2]
-        radii = info["radii"][sel].max(dim=-1).values  # [nnz]
 
         state["grad2d"].index_add_(0, gs_ids, grads.norm(dim=-1))
         state["count"].index_add_(0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float32))
@@ -253,13 +257,18 @@ class GESStrategy(Strategy):
             torch.cuda.empty_cache()
             mutated = True
 
-        # Only reset opacity at 3k and 6k. If we reset at 9k, surfels won't
-        # have time to solidify before the 10k opacity cull, and everything gets discarded!
-        if step % self.reset_every == 0 and step > 20000:
-            # BUG 14 FIX: Re-enabled opacity reset. Without this, floaters (which
-            # increase opacity to block background) never have their usefulness
-            # re-evaluated, meaning they survive the 10k opacity cull and remain forever.
-            reset_opa(params=params, optimizers=optimizers, state=state, value=self.prune_opa * 2.0)
+        # Reset opacity every reset_every steps.
+        # For surfels: reset at 3k and 6k. Skip 9k so they can solidify before 10k cull.
+        # For gaussians: reset every 3k steps (21k, 24k, etc.)
+        is_reset_step = step % self.reset_every == 0
+        is_surfel_solidification_buffer = (
+            is_surfel_phase and step >= self.surfel_density_stop_iter - self.reset_every
+        )
+
+        if is_reset_step and not is_surfel_solidification_buffer:
+            # BUG 14 FIX: Re-enabled opacity reset for surfel phase (3k, 6k).
+            # We use 0.01 as the reset value, matching the paper's default.
+            reset_opa(params=params, optimizers=optimizers, state=state, value=0.01)
             mutated = True
 
         if mutated:
