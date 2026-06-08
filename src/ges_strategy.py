@@ -10,8 +10,8 @@ from training_schedule import (
     GAUSSIAN_SPAWN_STEP,
 )
 from gsplat.strategy.ops import _update_param_with_optimizer, duplicate, remove, reset_opa, split
-from nerfstudio.utils.math import random_quat_tensor
-from nerfstudio.utils.spherical_harmonics import num_sh_bases
+from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
+from nerfstudio.utils.spherical_harmonics import RGB2SH, num_sh_bases
 from torch.nn import Parameter
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ class GESStrategy(Strategy):
     # The old single refine_stop_iter=15000 blocked ALL densification after
     # 15k, meaning Gaussians spawned at 20k could never be split/duplicated.
     refine_stop_iter: int = VISIBILITY_PRUNE_STEP  # kept for surfel phase
-    refine_stop_iter_gaussian: int = 50000  # allow Gaussian densification until training ends
+    refine_stop_iter_gaussian: int = 30000  # stop Gaussian densification at 30k to allow final fine-tuning
     reset_every: int = 3000
     refine_every: int = 100
     verbose: bool = False
@@ -227,6 +227,11 @@ class GESStrategy(Strategy):
         state = model.strategy_state[target_name]
         info = model.info.get(target_name)
 
+        # Sync contribution score buffer to state dictionary before strategy operations
+        if not is_surfel_phase and hasattr(model, "gaussian_max_contribution_score"):
+            if model.gaussian_max_contribution_score.shape[0] == model.gaussian.means.shape[0]:
+                state["gaussian_max_contribution_score"] = model.gaussian_max_contribution_score
+
         if info is None or optimizers is None:
             return
         self._update_state(params, state, info)
@@ -300,6 +305,14 @@ class GESStrategy(Strategy):
                     model.surfel_radii_cache = torch.zeros(
                         new_count, device=model.device
                     )
+            else:
+                # Retrieve the updated contribution score buffer from state and sync to model
+                if "gaussian_max_contribution_score" in state:
+                    model.gaussian_max_contribution_score = state.pop("gaussian_max_contribution_score")
+        else:
+            # Clean up the state dictionary if strategy did not mutate parameters
+            if not is_surfel_phase:
+                state.pop("gaussian_max_contribution_score", None)
 
     @torch.no_grad()
     def _grow_gs(
@@ -369,7 +382,8 @@ class GESStrategy(Strategy):
         step: int,
         is_surfel: bool = False,
     ):
-        is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
+        prune_opa_thresh = self.prune_opa if is_surfel else 0.01
+        is_prune = torch.sigmoid(params["opacities"].flatten()) < prune_opa_thresh
         if step > self.reset_every:
             # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
             # projection and receives 0 gradient. It never shrinks during optimization.
@@ -384,6 +398,11 @@ class GESStrategy(Strategy):
                 > self.prune_scale3d * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big
+
+            # Screen-space size culling: prune primitives that are too large in screen space
+            if state["radii"] is not None:
+                is_too_big_2d = state["radii"] > self.prune_scale2d
+                is_prune = is_prune | is_too_big_2d
         num_prune = is_prune.sum().item()
         if num_prune > 0:
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
@@ -648,6 +667,174 @@ class GESStrategy(Strategy):
         # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
         
+        # Resize contribution score buffer to match the new size
+        if hasattr(model, "gaussian_max_contribution_score"):
+            model.gaussian_max_contribution_score = torch.cat([
+                model.gaussian_max_contribution_score,
+                torch.zeros(num_new_gaussians, device=device)
+            ])
+            # Also keep strategy state in sync
+            state = model.strategy_state["gaussians"]
+            if "gaussian_max_contribution_score" in state and state["gaussian_max_contribution_score"] is not None:
+                state["gaussian_max_contribution_score"] = model.gaussian_max_contribution_score.clone()
+        
         print(
             f"Spawned {num_new_gaussians} new gaussians from saved seeds at iteration {model.step}."
         )
+
+    def spawn_gaussians_from_error_seeds(self, model, spawn_pts: torch.Tensor, spawn_cols: torch.Tensor):
+        """
+        Spawns new 3D Gaussians at the specified error-based unprojected positions.
+        """
+        num_new_gaussians = spawn_pts.shape[0]
+        if num_new_gaussians == 0:
+            return
+            
+        device = model.device
+        dim_sh = num_sh_bases(model.config.sh_degree)
+        
+        # Initialize features_dc from ground truth colors
+        if model.config.sh_degree > 0:
+            features_dc = RGB2SH(spawn_cols) # [N, 3]
+        else:
+            features_dc = torch.logit(spawn_cols, eps=1e-10) # [N, 3]
+            
+        features_rest = torch.zeros((num_new_gaussians, dim_sh - 1, 3), device=device)
+
+        # Initialize scales based on k-nearest neighbors
+        try:
+            distances, _ = k_nearest_sklearn(spawn_pts, 3)
+            avg_dist = distances.mean(dim=-1, keepdim=True)
+            scales = torch.log(avg_dist.repeat(1, 3))
+        except Exception as e:
+            print(f"Warning: k_nearest_sklearn failed during error spawn: {e}. Falling back to scene scale.")
+            scene_scale = self.strategy_state["gaussians"]["scene_scale"]
+            import math
+            safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
+            scales = torch.ones((num_new_gaussians, 3), device=device) * safe_scale
+
+        # Clamp scales to safe thickness/size
+        scene_scale = self.strategy_state["gaussians"]["scene_scale"]
+        import math
+        safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
+        scales = torch.clamp(scales, max=safe_scale)
+
+        # Initialize quats to identity
+        quats = torch.zeros((num_new_gaussians, 4), device=device)
+        quats[:, 0] = 1.0
+        
+        new_data = {
+            "means": spawn_pts.clone(),
+            "quats": quats,
+            "scales": scales,
+            "opacities": torch.logit(
+                0.1 * torch.ones((num_new_gaussians, 1), device=device)
+            ),
+            "features_dc": features_dc,
+            "features_rest": features_rest,
+        }
+
+        def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
+            return Parameter(new_data[name], requires_grad=p.requires_grad)
+
+        def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
+            return torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)
+
+        params = model.get_gaussian_param_dict()
+        optimizers = {
+            "means": model.optimizers["gaussian_means"],
+            "quats": model.optimizers["gaussian_quats"],
+            "scales": model.optimizers["gaussian_scales"],
+            "opacities": model.optimizers["gaussian_opacities"],
+            "features_dc": model.optimizers["gaussian_features_dc"],
+            "features_rest": model.optimizers["gaussian_features_rest"],
+        }
+        _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+        
+        # Update model attributes and optimizer param groups
+        model.gaussian.means = params["means"]
+        model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
+        model.gaussian.quats = params["quats"]
+        model.optimizers["gaussian_quats"].param_groups[0]["params"] = [model.gaussian.quats]
+        model.gaussian.scales = params["scales"]
+        model.optimizers["gaussian_scales"].param_groups[0]["params"] = [model.gaussian.scales]
+        model.gaussian.opacities = params["opacities"]
+        model.optimizers["gaussian_opacities"].param_groups[0]["params"] = [
+            model.gaussian.opacities
+        ]
+        model.gaussian.features_dc = params["features_dc"]
+        model.optimizers["gaussian_features_dc"].param_groups[0]["params"] = [
+            model.gaussian.features_dc
+        ]
+        model.gaussian.features_rest = params["features_rest"]
+        model.optimizers["gaussian_features_rest"].param_groups[0]["params"] = [
+            model.gaussian.features_rest
+        ]
+        
+        # Clean up optimizer states
+        self._clean_optimizer_states(model)
+        
+        # Resize contribution score buffer to match the new size
+        if hasattr(model, "gaussian_max_contribution_score"):
+            model.gaussian_max_contribution_score = torch.cat([
+                model.gaussian_max_contribution_score,
+                torch.zeros(num_new_gaussians, device=device)
+            ])
+            # Also keep strategy state in sync
+            state = model.strategy_state["gaussians"]
+            if "gaussian_max_contribution_score" in state and state["gaussian_max_contribution_score"] is not None:
+                state["gaussian_max_contribution_score"] = model.gaussian_max_contribution_score.clone()
+        
+        print(f"Spawned {num_new_gaussians} new Gaussians in high-error regions.")
+
+    def execute_contribution_pruning(self, model, keep_mask: torch.Tensor):
+        """
+        Prunes 3D Gaussians based on the contribution score keep_mask.
+        """
+        device = model.device
+        
+        def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
+            return Parameter(p[keep_mask], requires_grad=p.requires_grad)
+
+        def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
+            return v[keep_mask]
+
+        params = model.get_gaussian_param_dict()
+        optimizers = {
+            "means": model.optimizers["gaussian_means"],
+            "quats": model.optimizers["gaussian_quats"],
+            "scales": model.optimizers["gaussian_scales"],
+            "opacities": model.optimizers["gaussian_opacities"],
+            "features_dc": model.optimizers["gaussian_features_dc"],
+            "features_rest": model.optimizers["gaussian_features_rest"],
+        }
+        _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+        
+        # Update model attributes and optimizer param groups
+        model.gaussian.means = params["means"]
+        model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
+        model.gaussian.quats = params["quats"]
+        model.optimizers["gaussian_quats"].param_groups[0]["params"] = [model.gaussian.quats]
+        model.gaussian.scales = params["scales"]
+        model.optimizers["gaussian_scales"].param_groups[0]["params"] = [model.gaussian.scales]
+        model.gaussian.opacities = params["opacities"]
+        model.optimizers["gaussian_opacities"].param_groups[0]["params"] = [
+            model.gaussian.opacities
+        ]
+        model.gaussian.features_dc = params["features_dc"]
+        model.optimizers["gaussian_features_dc"].param_groups[0]["params"] = [
+            model.gaussian.features_dc
+        ]
+        model.gaussian.features_rest = params["features_rest"]
+        model.optimizers["gaussian_features_rest"].param_groups[0]["params"] = [
+            model.gaussian.features_rest
+        ]
+        
+        # Clean up optimizer states
+        self._clean_optimizer_states(model)
+        
+        # Prune max contribution score buffer
+        if hasattr(model, "gaussian_max_contribution_score"):
+            model.gaussian_max_contribution_score = model.gaussian_max_contribution_score[keep_mask]
+        
+        print(f"Pruned redundant Gaussians. Now having {model.gaussian.means.shape[0]} Gaussians.")
