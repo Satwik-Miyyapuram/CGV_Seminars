@@ -17,3 +17,5 @@ test*/*
 cgv_notes/*
 conductor/*
 */node_modules/*
+garden
+web_assets
