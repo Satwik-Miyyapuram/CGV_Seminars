@@ -427,11 +427,11 @@ class GESModel(Model):
                     except Exception as e:
                         print(f"Failed to generate ablation renders: {e}")
 
-                # Final pruning logic: use the median value to keep exactly 50%
-                # median_val = torch.median(opacities).item()
-                median_val = 0.8
-                mask = (opacities >= median_val).view(-1)
-                print(f"Using median opacity {median_val:.4f} as the pruning threshold.")
+                # Final pruning logic: use the paper threshold of w_i < 0.8 (where w_i is in [0, 255])
+                # so the threshold in [0, 1] is 0.8 / 255.0
+                thresh_val = 0.8 / 255.0
+                mask = (opacities >= thresh_val).view(-1)
+                print(f"Using opacity threshold {thresh_val:.5f} (w_i < 0.8) for pruning.")
 
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians

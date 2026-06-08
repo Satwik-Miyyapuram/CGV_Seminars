@@ -237,21 +237,24 @@ class GESStrategy(Strategy):
         self._update_state(params, state, info)
 
         mutated = False
-
         if step >= self.refine_start_iter and step % self.refine_every == 0:
-            num_duplicates, n_split = self._grow_gs(params, optimizers, state, step, is_surfel_phase)
-            target_type = "Surfels" if is_surfel_phase else "Gaussians"
-            if self.verbose or is_surfel_phase:  # Always log surfel densification
-                print(
-                    f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
-                    f"Now having {len(params['means'])} {target_type}."
-                )
-            num_prune = self._prune_gs(params, optimizers, state, step, is_surfel_phase)
-            if self.verbose or is_surfel_phase:  # Always log surfel pruning
-                print(
-                    f"Step {step}: {num_prune} {target_type} pruned. Now having {len(params['means'])} {target_type}."
-                )
-
+            if is_surfel_phase:
+                num_duplicates, n_split = self._grow_gs(params, optimizers, state, step, is_surfel_phase)
+                target_type = "Surfels"
+                if self.verbose or is_surfel_phase:  # Always log surfel densification
+                    print(
+                        f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
+                        f"Now having {len(params['means'])} {target_type}."
+                    )
+                num_prune = self._prune_gs(params, optimizers, state, step, is_surfel_phase)
+                if self.verbose or is_surfel_phase:  # Always log surfel pruning
+                    print(
+                        f"Step {step}: {num_prune} {target_type} pruned. "
+                        f"Now having {len(params['means'])} {target_type}."
+                    )
+            else:
+                # Do nothing! GES uses error-map spawning and contribution score pruning, NOT clone/split
+                pass
             state["grad2d"].zero_()
             state["count"].zero_()
             state["radii"].zero_()
