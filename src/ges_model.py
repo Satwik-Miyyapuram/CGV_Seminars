@@ -33,16 +33,16 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from ges_strategy import GESStrategy
 from training_schedule import (
+    CLAMP_18K_STEP,
+    CLAMP_19K_STEP,
+    COMPOSITE_ASSEMBLY_STEP,
+    FIXED_VIEW_STEPS,
+    GAUSSIAN_SPAWN_STEP,
+    LOSS_GRAPH_STEP,
+    MILESTONE_STEPS,
     SURFEL_DENSIFICATION_STOP,
     SURFEL_PHASE_END,
     VISIBILITY_PRUNE_STEP,
-    CLAMP_18K_STEP,
-    CLAMP_19K_STEP,
-    GAUSSIAN_SPAWN_STEP,
-    LOSS_GRAPH_STEP,
-    FIXED_VIEW_STEPS,
-    MILESTONE_STEPS,
-    COMPOSITE_ASSEMBLY_STEP,
 )
 
 
@@ -161,8 +161,6 @@ class GESModel(Model):
         Called during initialization.
         Initialize your Surfels and Gaussians here based on the seed point cloud.
         """
-        # TODO: Load initial point cloud from self.kwargs["seed_points"] if provided by datamanager
-        # Skeletons for Surfel parameters (2D)
 
         if self.seed_points is not None and not self.config.random_init:
             print("Initializing from seed points...")
@@ -364,7 +362,6 @@ class GESModel(Model):
         Register callbacks for the Discard Phase (Iter 10k) and Ramp Phase (Iter 18k-20k).
         """
         callbacks = []
-        # TODO: implement the discard phase and ramp phase logic in the respective callbacks, currently just placeholders
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
@@ -427,11 +424,11 @@ class GESModel(Model):
                     except Exception as e:
                         print(f"Failed to generate ablation renders: {e}")
 
-                # Final pruning logic: use the paper threshold of w_i < 0.8 (where w_i is in [0, 255])
-                # so the threshold in [0, 1] is 0.8 / 255.0
-                thresh_val = 0.8 / 255.0
+                # Final pruning logic: use opacity < 0.8 as the threshold.
+                # Since opacities here is already passed through sigmoid, this checks opacity < 80%.
+                thresh_val = 0.8
                 mask = (opacities >= thresh_val).view(-1)
-                print(f"Using opacity threshold {thresh_val:.5f} (w_i < 0.8) for pruning.")
+                print(f"Using opacity threshold {thresh_val:.5f} for pruning.")
 
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
@@ -517,10 +514,18 @@ class GESModel(Model):
                     plt.plot(steps, ema_losses, label="L1 Loss (Smoothed)", color="tab:blue")
                     plt.plot(steps, losses, alpha=0.15, color="tab:blue", label="Raw Batch Loss")
                     plt.axvline(
-                        x=SURFEL_DENSIFICATION_STOP, color="r", linestyle="--", alpha=0.5, label="Discard Phase"
+                        x=SURFEL_DENSIFICATION_STOP,
+                        color="r",
+                        linestyle="--",
+                        alpha=0.5,
+                        label="Discard Phase",
                     )
                     plt.axvline(
-                        x=GAUSSIAN_SPAWN_STEP, color="g", linestyle="--", alpha=0.5, label="Gaussian Spawn"
+                        x=GAUSSIAN_SPAWN_STEP,
+                        color="g",
+                        linestyle="--",
+                        alpha=0.5,
+                        label="Gaussian Spawn",
                     )
                     plt.xlabel("Iterations")
                     plt.ylabel("L1 Loss")
@@ -1053,15 +1058,17 @@ class GESModel(Model):
             "background": background_color,
         }
         if self.training:
-            out_dict.update({
-                "surfel_depth": surfel_depth,
-                "surfel_alpha": surfel_alpha,
-                "gaussian_alpha": gaussian_alpha if self.gaussian.means.shape[0] > 0 else None,
-                "camera_to_world": optimized_camera_to_world,
-                "intrinsic_mat": intrinsic_mat,
-                "x_screen": x_screen if self.gaussian.means.shape[0] > 0 else None,
-                "y_screen": y_screen if self.gaussian.means.shape[0] > 0 else None,
-            })
+            out_dict.update(
+                {
+                    "surfel_depth": surfel_depth,
+                    "surfel_alpha": surfel_alpha,
+                    "gaussian_alpha": gaussian_alpha if self.gaussian.means.shape[0] > 0 else None,
+                    "camera_to_world": optimized_camera_to_world,
+                    "intrinsic_mat": intrinsic_mat,
+                    "x_screen": x_screen if self.gaussian.means.shape[0] > 0 else None,
+                    "y_screen": y_screen if self.gaussian.means.shape[0] > 0 else None,
+                }
+            )
         return out_dict
 
     def get_gt_img(self, image: torch.Tensor):
@@ -1265,46 +1272,46 @@ class GESModel(Model):
         if self.training and 20000 < self.step <= 30000:
             device = self.device
             height, width = gt_img.shape[:2]
-            
+
             # 1. Error-based Spawning: Accumulate high-error points
-            error_map = torch.mean((gt_img.detach() - pred_img.detach()) ** 2, dim=-1) # [H, W]
+            error_map = torch.mean((gt_img.detach() - pred_img.detach()) ** 2, dim=-1)  # [H, W]
             probs = error_map.flatten() / (error_map.sum() + 1e-8)
-            
+
             # Sample N = 100 points
             N = 100
             sampled_indices = torch.multinomial(probs, num_samples=N, replacement=True)
             u = sampled_indices % width
             v = sampled_indices // width
-            
+
             surfel_depth = outputs.get("surfel_depth")
             if surfel_depth is not None:
                 # Extract depth
-                z = surfel_depth.squeeze(0)[v, u, 0] # [N]
-                valid_mask = z < 9.0 # depth < 9.0 are valid surfel surfaces
-                
+                z = surfel_depth.squeeze(0)[v, u, 0]  # [N]
+                valid_mask = z < 9.0  # depth < 9.0 are valid surfel surfaces
+
                 if valid_mask.sum() > 0:
                     u_v = u[valid_mask]
                     v_v = v[valid_mask]
                     z_v = z[valid_mask]
-                    
+
                     intrinsic_mat = outputs["intrinsic_mat"]
                     fx, fy = intrinsic_mat[0, 0, 0], intrinsic_mat[0, 1, 1]
                     cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
-                    
+
                     # Unproject to camera space
                     x_cam = (u_v - cx) * z_v / fx
                     y_cam = (v_v - cy) * z_v / fy
-                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1) # [M, 3]
-                    
+                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1)  # [M, 3]
+
                     # Transform to world space
                     c2w = outputs["camera_to_world"]
                     R = c2w[0, :3, :3]
                     T = c2w[0, :3, 3]
-                    pos_world = torch.matmul(pos_cam, R.T) + T # [M, 3]
-                    
+                    pos_world = torch.matmul(pos_cam, R.T) + T  # [M, 3]
+
                     # Retrieve ground truth color
-                    color = gt_img[v_v, u_v] # [M, 3]
-                    
+                    color = gt_img[v_v, u_v]  # [M, 3]
+
                     self.error_spawn_points.append(pos_world.cpu())
                     self.error_spawn_colors.append(color.cpu())
 
@@ -1313,7 +1320,7 @@ class GESModel(Model):
             surfel_alpha = outputs.get("surfel_alpha")
             x_screen = outputs.get("x_screen")
             y_screen = outputs.get("y_screen")
-            
+
             if (
                 self.gaussian.means.shape[0] > 0
                 and gaussian_alpha is not None
@@ -1322,37 +1329,45 @@ class GESModel(Model):
                 and y_screen is not None
             ):
                 num_gaussians = self.gaussian.means.shape[0]
-                
+
                 # Verify max contribution score buffer size
                 if self.gaussian_max_contribution_score.shape[0] != num_gaussians:
-                    self.gaussian_max_contribution_score = torch.zeros(
-                        num_gaussians, device=device
-                    )
-                
+                    self.gaussian_max_contribution_score = torch.zeros(num_gaussians, device=device)
+
                 # Convert log-features to base RGB color
                 c_rgb = torch.clamp(SH2RGB(self.gaussian.features_dc.detach()), 0.0, 1.0)
-                c_i = c_rgb.max(dim=-1).values # [N]
-                alpha_i = torch.sigmoid(self.gaussian.opacities.detach()).flatten() # [N]
-                
+                c_i = c_rgb.max(dim=-1).values  # [N]
+                alpha_i = torch.sigmoid(self.gaussian.opacities.detach()).flatten()  # [N]
+
                 # Sample W_S and W_G at Gaussian center
                 x_norm = (x_screen / width) * 2.0 - 1.0
                 y_norm = (y_screen / height) * 2.0 - 1.0
-                grid = torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0) # [1, 1, N, 2]
-                
+                grid = (
+                    torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)
+                )  # [1, 1, N, 2]
+
                 # surfel_alpha permuted for grid_sample
-                surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2) # [1, 1, H, W]
-                gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2) # [1, 1, H, W]
-                
+                surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
+                gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
+
                 sampled_W_S = torch.nn.functional.grid_sample(
-                    surfel_alpha_map, grid, mode="nearest", padding_mode="border", align_corners=False
-                ).flatten() # [N]
+                    surfel_alpha_map,
+                    grid,
+                    mode="nearest",
+                    padding_mode="border",
+                    align_corners=False,
+                ).flatten()  # [N]
                 sampled_W_G = torch.nn.functional.grid_sample(
-                    gaussian_alpha_map, grid, mode="nearest", padding_mode="border", align_corners=False
-                ).flatten() # [N]
-                
+                    gaussian_alpha_map,
+                    grid,
+                    mode="nearest",
+                    padding_mode="border",
+                    align_corners=False,
+                ).flatten()  # [N]
+
                 # Compute contribution score
-                score = (c_i * alpha_i) / (sampled_W_S + sampled_W_G + 1e-5) # [N]
-                
+                score = (c_i * alpha_i) / (sampled_W_S + sampled_W_G + 1e-5)  # [N]
+
                 # Update running maximum score
                 self.gaussian_max_contribution_score = torch.maximum(
                     self.gaussian_max_contribution_score, score
@@ -1360,19 +1375,21 @@ class GESModel(Model):
 
             # 3. Periodic Spawning and Pruning Callback (Every 1000 steps)
             if self.step > 20000 and self.step % 1000 == 0:
-                print(f"[Joint Optimization] Periodic step {self.step} unprojected spawning and contribution pruning...")
-                
+                print(
+                    f"[Joint Optimization] Periodic step {self.step} unprojected spawning and contribution pruning..."
+                )
+
                 # 3a. Execute Spawning
                 if len(self.error_spawn_points) > 0:
                     spawn_pts = torch.cat(self.error_spawn_points, dim=0).to(device)
                     spawn_cols = torch.cat(self.error_spawn_colors, dim=0).to(device)
-                    
+
                     self.strategy.spawn_gaussians_from_error_seeds(self, spawn_pts, spawn_cols)
-                    
+
                     # Clear lists
                     self.error_spawn_points = []
                     self.error_spawn_colors = []
-                
+
                 # 3b. Execute Pruning based on contribution score < 0.02
                 if self.gaussian.means.shape[0] > 0:
                     num_gaussians = self.gaussian.means.shape[0]
@@ -1381,9 +1398,11 @@ class GESModel(Model):
                         keep_mask = self.gaussian_max_contribution_score >= 0.02
                         num_prune = (~keep_mask).sum().item()
                         if num_prune > 0:
-                            print(f"[Contribution Pruning] Pruning {num_prune} Gaussians with contribution score < 0.02.")
+                            print(
+                                f"[Contribution Pruning] Pruning {num_prune} Gaussians with contribution score < 0.02."
+                            )
                             self.strategy.execute_contribution_pruning(self, keep_mask)
-                        
+
                         # Reset contribution score buffer to zeros for the next 1000 iterations
                         self.gaussian_max_contribution_score = torch.zeros(
                             self.gaussian.means.shape[0], device=device
@@ -1391,6 +1410,8 @@ class GESModel(Model):
                         # Also keep strategy state in sync
                         state = self.strategy_state["gaussians"]
                         if "gaussian_max_contribution_score" in state:
-                            state["gaussian_max_contribution_score"] = self.gaussian_max_contribution_score.clone()
-                            
+                            state["gaussian_max_contribution_score"] = (
+                                self.gaussian_max_contribution_score.clone()
+                            )
+
         return loss_dict
