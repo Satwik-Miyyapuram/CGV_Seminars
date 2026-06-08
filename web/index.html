@@ -1,66 +1,528 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GES Viewer</title>
+    <title>GES-Explorer: Gaussian Meets Surfel</title>
+    <!-- Modern Premium Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- KaTeX for beautiful math equations -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+
     <style>
+        :root {
+            --bg-color: #080710;
+            --panel-bg: rgba(255, 255, 255, 0.05);
+            --panel-border: rgba(255, 255, 255, 0.1);
+            --accent-green: #00ff87;
+            --accent-orange: #ff9f43;
+            --accent-blue: #00d2ff;
+            --accent-red: #ff4a5a;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
         body {
             margin: 0;
             overflow: hidden;
-            background-color: #000;
+            background-color: var(--bg-color);
+            font-family: 'Outfit', sans-serif;
+            color: var(--text-main);
+        }
+
+        /* Top Tab Bar Navigation */
+        #tab-nav {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            display: flex;
+            background: rgba(8, 7, 16, 0.75);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid var(--panel-border);
+            border-radius: 30px;
+            padding: 4px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 10px 24px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-main);
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, var(--accent-blue) 0%, #0072ff 100%);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(0, 210, 255, 0.3);
         }
 
         #viewer {
             width: 100vw;
             height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
         }
 
-        canvas {
+        /* Glassmorphic Control Panel */
+        #ui {
+            position: absolute;
+            top: 80px;
+            left: 20px;
+            z-index: 10;
+            width: 360px;
+            background: rgba(8, 7, 16, 0.7);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 6px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff 0%, var(--accent-blue) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+        }
+
+        .section-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin: 16px 0 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .section-title span {
+            color: var(--accent-blue);
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        label {
+            font-size: 13px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .slider-label-val {
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--accent-blue);
+            font-weight: 500;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .file-upload-btn {
+            display: block;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px dashed var(--panel-border);
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s ease;
+            margin-top: 4px;
+        }
+
+        .file-upload-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--accent-blue);
+        }
+
+        .file-upload-btn.loaded {
+            border-color: var(--accent-green);
+            background: rgba(0, 255, 135, 0.05);
+            color: #fff;
+        }
+
+        /* Slider styling */
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+            margin-bottom: 12px;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            cursor: pointer;
+            transition: transform 0.1s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        /* Checkbox styling */
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-main);
+        }
+
+        .checkbox-container input {
+            cursor: pointer;
+            accent-color: var(--accent-blue);
+            width: 16px;
+            height: 16px;
+        }
+
+        hr {
+            border: 0;
+            height: 1px;
+            background: var(--panel-border);
+            margin: 18px 0;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-muted);
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        .status-badge.active {
+            background: rgba(0, 255, 135, 0.2);
+            color: var(--accent-green);
+        }
+
+        /* Comparison Panel Layout */
+        #comparison-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #06050c;
+            z-index: 5;
+            padding: 90px 40px 40px 40px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            display: none;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 30px;
+        }
+
+        .comparison-left {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .comparison-right {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .card h3 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .card-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            line-height: 1.4;
+        }
+
+        .diagram-canvas {
+            background: #0d0c14;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.05);
+            width: 100%;
+            height: 180px;
             display: block;
         }
 
-        #ui {
+        /* 3D Side-by-Side Views */
+        .sbs-viewport-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            height: 300px;
+            margin-bottom: 12px;
+        }
+
+        .sbs-viewport {
+            background: #0d0c14;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .viewport-label {
             position: absolute;
             top: 10px;
             left: 10px;
-            color: white;
-            font-family: sans-serif;
-            background: rgba(0, 0, 0, 0.5);
-            padding: 15px;
+            background: rgba(0,0,0,0.6);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            z-index: 2;
+        }
+
+        .comp-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--panel-border);
+            color: #fff;
+            padding: 8px 16px;
             border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .comp-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--accent-blue);
+        }
+
+        .comp-btn.active {
+            background: rgba(0, 210, 255, 0.15);
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
         }
     </style>
 </head>
 <body>
+    <div id="tab-nav">
+        <button class="tab-btn active" id="btn-viewer">GES Web Viewer</button>
+        <button class="tab-btn" id="btn-comparison">Artifact Comparison</button>
+    </div>
+
+    <div id="viewer"></div>
     <div id="ui">
-        <h2>Gaussian-Surfel Model Viewer</h2>
-        <div style="margin-bottom: 10px;">
-        <label style="font-weight: bold; color: #4CAF50;">1. Load Surfels(.ply)</label><br>
+        <h2>GES-Explorer</h2>
+        <div class="subtitle">Interactive Paper Explainer</div>
+
+        <div class="section-title"><span>■</span> Data Import <span class="status-badge" id="autoLoadStatus">Idle</span></div>
+        
+        <div class="control-group">
+            <label>1. Surfels (.ply) <span id="surfelLoaded" class="status-badge">Not Loaded</span></label>
+            <label for="surfelInput" class="file-upload-btn" id="surfelLabel">Choose Surfels File...</label>
             <input type="file" id="surfelInput" accept=".ply">
         </div>
 
         <div class="control-group">
-            <label for="gaussianInput" class="custom-file-upload">2. Load Gaussians(.ply)</label>
+            <label>2. Gaussians (.ply) <span id="gaussianLoaded" class="status-badge">Not Loaded</span></label>
+            <label for="gaussianInput" class="file-upload-btn" id="gaussianLabel">Choose Gaussians File...</label>
             <input type="file" id="gaussianInput" accept=".ply" />
         </div>
         
         <div class="control-group">
-            <label for="configInput" class="custom-file-upload" style="color: #FFaa33;">3. Load Config(.json)</label>
+            <label>3. Config (.json) <span id="configLoaded" class="status-badge">Not Loaded</span></label>
+            <label for="configInput" class="file-upload-btn" id="configLabel">Choose Config File...</label>
             <input type="file" id="configInput" accept=".json" />
         </div>
 
-        <hr style="border-color: #444;">
-        <label>Surfel Depth Offset(&delta;):
-            <span id="deltaValue">0.5</span>
-        </label><br>
-        <input type="range" id="deltaSlider" min="-100.0" max="5000.0" step="0.1" value="0.5"><br><br>
-        <hr style="border-color: #444;">
-        <label><input type="checkbox" id="toggleSurfels" checked> Show Surfels (Module A)</label><br>
-        <label><input type="checkbox" id="toggleGaussians" checked> Show Gaussians (Module A)</label><br>
-        <label><input type="checkbox" id="toggleDepthTest" checked> Enable Gaussian Depth Culling</label><br>
+        <hr>
+
+        <div class="section-title"><span>■</span> Module E: Parameter Explorers</div>
+        
+        <div class="control-group">
+            <label for="deltaSlider">
+                Surfel Depth Offset (&delta;)
+                <span class="slider-label-val" id="deltaValue">0.5</span>
+            </label>
+            <input type="range" id="deltaSlider" min="-10.0" max="50.0" step="0.1" value="0.5">
+        </div>
+
+        <div class="control-group">
+            <label for="opacityCapSlider">
+                Interactive Opacity Cap (&tau;)
+                <span class="slider-label-val" id="opacityCapValue">1.00</span>
+            </label>
+            <input type="range" id="opacityCapSlider" min="0.0" max="1.0" step="0.01" value="1.00">
+        </div>
+
+        <div class="control-group">
+            <label for="discardThresholdSlider">
+                Discard Threshold
+                <span class="slider-label-val" id="discardThresholdValue">0.002</span>
+            </label>
+            <input type="range" id="discardThresholdSlider" min="0.0" max="0.1" step="0.001" value="0.002">
+        </div>
+
+        <hr>
+
+        <div class="section-title"><span>■</span> View Options</div>
+        
+        <label class="checkbox-container">
+            <input type="checkbox" id="toggleBiScale" checked>
+            <span>Enable GES Bi-scale Disc Opacity (Eq. 6-7)</span>
+        </label>
+        
+        <label class="checkbox-container">
+            <input type="checkbox" id="toggleSurfels" checked>
+            <span>Show Surfels (Module A)</span>
+        </label>
+        
+        <label class="checkbox-container">
+            <input type="checkbox" id="toggleGaussians" checked>
+            <span>Show Gaussians (Module A)</span>
+        </label>
+        
+        <label class="checkbox-container">
+            <input type="checkbox" id="toggleDepthTest" checked>
+            <span>Enable Gaussian Depth Culling</span>
+        </label>
     </div>
+
+    <!-- Comparison Tab UI -->
+    <div id="comparison-container">
+        <div class="comparison-left">
+            <div class="card" id="card-ray">
+                <h3>Panel A: Sorting Artifacts (Popping)</h3>
+                <div class="card-desc">
+                    <strong>3DGS (Sorted α-Blending):</strong> $C = \sum_{i=1}^{N} c_i \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j)$ — order-dependent! <br>
+                    <strong>GES (Additive + Normalize):</strong> $C = \frac{\sum_{i} c_i \alpha_i}{\sum_{i} \alpha_i}$ — order-independent (sum is commutative). <br>
+                    Drag the camera angle slider. 3DGS must sort splats by depth — when the sort order flips, the color strip <strong>pops</strong> (sudden discontinuous change). GES uses additive accumulation, which is commutative — the result is identical regardless of splat order.
+                </div>
+                <div class="control-group">
+                    <label for="orderSlider">Camera Angle / Ray Projection <span class="slider-label-val" id="orderValue">0°</span></label>
+                    <input type="range" id="orderSlider" min="-45" max="45" step="1" value="0">
+                </div>
+                <canvas class="diagram-canvas" id="ray-canvas" style="height: 250px;"></canvas>
+            </div>
+
+            <div class="card" id="card-tile">
+                <h3>Panel B: Tile-Based Sorting</h3>
+                <div class="card-desc">
+                    3DGS divides the screen into 16×16 pixel tiles and sorts Gaussians <strong>independently per tile</strong>. When two Gaussians overlap across a tile boundary, adjacent tiles may sort them in different orders, producing a visible seam. GES uses additive blending ($\sum c_i \alpha_i$) which is commutative — order doesn't matter, so no seams.
+                </div>
+                <canvas class="diagram-canvas" id="tile-canvas" style="height: 220px;"></canvas>
+            </div>
+
+            <div class="card" id="card-leaking">
+                <h3>Panel C: Color Leaking &amp; Depth Culling</h3>
+                <div class="card-desc">
+                    <strong>SortFreeGS:</strong> $C = \frac{\sum_{i} c_i \alpha_i}{\sum_{i} \alpha_i + \epsilon}$ (Always leaks) <br>
+                    <strong>GES:</strong> $C_{GES} = \frac{W_S C_S + \sum_{i} \mathbb{1}(d_i &lt; D_S + \delta) c_i \alpha_i}{W_S + \sum_{i} \mathbb{1}(d_i &lt; D_S + \delta) \alpha_i + \epsilon}$ <br>
+                    When a bright Gaussian is behind a solid opaque surfel (depth $D_S$), SortFreeGS blends them anyway, leaking color. GES introduces the indicator function $\mathbb{1}$ to explicitly cull fragments when $d_i > D_S + \delta$.
+                </div>
+                <div class="control-group">
+                    <label for="compDeltaSlider">Depth Test Offset ($\delta$) <span class="slider-label-val" id="compDeltaValue">0.5</span></label>
+                    <input type="range" id="compDeltaSlider" min="0.0" max="1.5" step="0.05" value="0.5">
+                </div>
+                <canvas class="diagram-canvas" id="leaking-canvas"></canvas>
+            </div>
+        </div>
+
+        <div class="comparison-right">
+            <div class="card" style="height: 100%; display: flex; flex-direction: column;">
+                <h3>3D Interactive Side-by-Side</h3>
+                <div class="card-desc" style="margin-bottom: 8px;">
+                    Move the camera below to interact with a live 3D side-by-side representation of 3DGS vs. GES. Check out the tile sorting seams and depth test behaviors.
+                </div>
+                <div class="sbs-viewport-container">
+                    <div class="sbs-viewport" id="viewport-3dgs">
+                        <div class="viewport-label" style="color: var(--accent-red); border-color: var(--accent-red);">3DGS (Alpha Blending)</div>
+                        <div id="debug-3dgs" style="position: absolute; bottom: 10px; left: 10px; font-family: monospace; font-size: 10px; color: #fff; background: rgba(0,0,0,0.8); padding: 4px; border-radius: 4px; z-index: 2; pointer-events: none;"></div>
+                    </div>
+                    <div class="sbs-viewport" id="viewport-ges">
+                        <div class="viewport-label" style="color: var(--accent-green); border-color: var(--accent-green);">GES (Two-Pass Depth Tested)</div>
+                        <div id="debug-ges" style="position: absolute; bottom: 10px; left: 10px; font-family: monospace; font-size: 10px; color: #fff; background: rgba(0,0,0,0.8); padding: 4px; border-radius: 4px; z-index: 2; pointer-events: none;">GES Order-Independent</div>
+                    </div>
+                </div>
+                <div class="card-desc" style="font-size: 12px;">
+                    <strong>How to learn from this 3D demo:</strong> <br>
+                    Orbit the camera around the splats! 3DGS sorts transparent fragments based on the distance from their centers to the camera. As you orbit, watch the debug text above: when the camera crosses the threshold where the <strong>Blue</strong> splat becomes further away than the <strong>Red</strong> splat, Three.js swaps their render order. Because 3DGS relies on standard Alpha Blending, swapping the order drastically changes the blended color (popping). GES writes the Blue surfel to the explicit depth-buffer, so it perfectly occludes the Gaussians regardless of what order they are drawn!
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script type="module" src="./ges_viewer.ts"></script>
+    <script type="module" src="./comparison_viewer.ts"></script>
 </body>
 </html>
