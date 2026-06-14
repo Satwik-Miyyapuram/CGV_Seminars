@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { Splat, SPLATS } from "./shared";
 // ============================================================
 // 3D Interactive Side-by-Side Viewer
 // ============================================================
@@ -12,11 +13,8 @@ export class SideBySide3DViewer {
     cameraGes!: THREE.PerspectiveCamera;
     rendererGes!: THREE.WebGLRenderer;
     controlsGes!: OrbitControls;
-    blueMesh3dgs!: THREE.Mesh;
-    redMesh3dgs!: THREE.Mesh;
-    blueMeshGes!: THREE.Mesh;
-    redMeshGes!: THREE.Mesh;
-    greenMeshGes!: THREE.Mesh;
+    meshes3dgs: { splat: Splat, mesh: THREE.Mesh }[] = [];
+    meshesGes: { splat: Splat, mesh: THREE.Mesh }[] = [];
     // Track which viewport the user is actively interacting with
     private activeViewport: "3dgs" | "ges" | null = null;
     constructor() {
@@ -99,10 +97,7 @@ export class SideBySide3DViewer {
                 gl_FragColor = vec4(uColor * (0.85 + 0.15 * edge), uOpacity * edge);
             }
         `;
-        const zSpace = 0.05;
         // --- GES Gaussian fragment shader: outputs PREMULTIPLIED color for additive blending ---
-        // gl_FragColor = vec4(color * opacity * gaussian, opacity * gaussian)
-        // This allows additive hardware blending: src=ONE, dst=ONE
         const gesGaussFS = `
             varying vec2 vUv;
             uniform vec3 uColor;
@@ -115,73 +110,41 @@ export class SideBySide3DViewer {
                 gl_FragColor = vec4(uColor * alpha, alpha);
             }
         `;
-        // Blue (surfel in GES, gaussian in 3DGS)
-        const blueMat = new THREE.ShaderMaterial({
-            vertexShader: isGES ? surfelVS : gaussVS,
-            fragmentShader: isGES ? surfelFS : gaussFS,
-            uniforms: { uColor: { value: new THREE.Color(0x00d2ff) }, uOpacity: { value: 0.95 } },
-            transparent: true,
-            depthWrite: isGES,
-            depthTest: true,
-            side: THREE.DoubleSide,
+
+        SPLATS.forEach(s => {
+            const isSurfel = isGES && s.isSurfel;
+            const mat = new THREE.ShaderMaterial({
+                vertexShader: isSurfel ? surfelVS : gaussVS,
+                fragmentShader: isSurfel ? surfelFS : (isGES ? gesGaussFS : gaussFS),
+                uniforms: { 
+                    uColor: { value: new THREE.Color(s.rgb[0], s.rgb[1], s.rgb[2]) }, 
+                    uOpacity: { value: s.opacity } 
+                },
+                transparent: true,
+                depthWrite: !!isSurfel,
+                depthTest: true,
+                side: THREE.DoubleSide,
+                ...(!isSurfel && isGES ? {
+                    blending: THREE.CustomBlending,
+                    blendSrc: THREE.OneFactor,
+                    blendDst: THREE.OneFactor,
+                    blendSrcAlpha: THREE.OneFactor,
+                    blendDstAlpha: THREE.OneFactor,
+                } : {})
+            });
+
+            const size = isSurfel ? 1.5 : 1.3;
+            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+            mesh.position.set(s.meshPos[0], s.meshPos[1], s.meshPos[2]);
+            scene.add(mesh);
+
+            if (isGES) {
+                mesh.renderOrder = isSurfel ? 1 : 2;
+                this.meshesGes.push({ splat: s, mesh });
+            } else {
+                this.meshes3dgs.push({ splat: s, mesh });
+            }
         });
-        const blueMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5), blueMat);
-        blueMesh.position.set(-0.2, 0, zSpace);
-        scene.add(blueMesh);
-        // Red (always gaussian billboard)
-        const redMat = new THREE.ShaderMaterial({
-            vertexShader: gaussVS,
-            fragmentShader: isGES ? gesGaussFS : gaussFS,  // GES: premultiplied for additive
-            uniforms: { uColor: { value: new THREE.Color(0xff4a5a) }, uOpacity: { value: 0.9 } },
-            transparent: true,
-            depthWrite: false,
-            depthTest: isGES,  // GES: depth test against surfel depth buffer (but no depth write)
-            side: THREE.DoubleSide,
-            // GES floaters use ADDITIVE blending: src=ONE, dst=ONE
-            // This makes the result ORDER-INDEPENDENT (no popping!)
-            ...(isGES ? {
-                blending: THREE.CustomBlending,
-                blendSrc: THREE.OneFactor,
-                blendDst: THREE.OneFactor,
-                blendSrcAlpha: THREE.OneFactor,
-                blendDstAlpha: THREE.OneFactor,
-            } : {}),
-        });
-        const redMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3), redMat);
-        redMesh.position.set(0.2, 0, -zSpace);
-        scene.add(redMesh);
-        // Green (always gaussian billboard)
-        const greenMat = new THREE.ShaderMaterial({
-            vertexShader: gaussVS,
-            fragmentShader: isGES ? gesGaussFS : gaussFS,  // GES: premultiplied for additive
-            uniforms: { uColor: { value: new THREE.Color(0x00ff87) }, uOpacity: { value: 0.85 } },
-            transparent: true,
-            depthWrite: false,
-            depthTest: isGES,  // GES: depth test against surfel depth buffer (but no depth write)
-            side: THREE.DoubleSide,
-            ...(isGES ? {
-                blending: THREE.CustomBlending,
-                blendSrc: THREE.OneFactor,
-                blendDst: THREE.OneFactor,
-                blendSrcAlpha: THREE.OneFactor,
-                blendDstAlpha: THREE.OneFactor,
-            } : {}),
-        });
-        const greenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.2), greenMat);
-        greenMesh.position.set(0.0, 0.2, 0.0);
-        scene.add(greenMesh);
-        if (isGES) {
-            this.blueMeshGes = blueMesh;
-            this.redMeshGes = redMesh;
-            this.greenMeshGes = greenMesh;
-            // Surfel renders first (writes depth), then floaters render additively
-            blueMesh.renderOrder = 1;
-            redMesh.renderOrder = 2;
-            greenMesh.renderOrder = 2;
-        } else {
-            this.blueMesh3dgs = blueMesh;
-            this.redMesh3dgs = redMesh;
-        }
     }
     bindControls() {
         // Track which viewport the user is interacting with via pointer events
@@ -218,29 +181,41 @@ export class SideBySide3DViewer {
             this.controls3dgs.target.copy(this.controlsGes.target);
         }
         // 3DGS debug overlay
-        if (this.blueMesh3dgs && this.redMesh3dgs) {
-            const dB = this.camera3dgs.position.distanceTo(this.blueMesh3dgs.position);
-            const dR = this.camera3dgs.position.distanceTo(this.redMesh3dgs.position);
+        if (this.meshes3dgs.length > 0) {
+            const dists = this.meshes3dgs.map(m => ({
+                name: m.splat.name,
+                d: this.camera3dgs.position.distanceTo(m.mesh.position)
+            }));
+            dists.sort((a, b) => a.d - b.d);
             const el = document.getElementById("debug-3dgs");
             if (el) {
-                const order = dB > dR ? "Blue → Red" : "Red → Blue";
-                el.innerHTML = `Blue: ${dB.toFixed(2)}<br>Red: ${dR.toFixed(2)}<br>Order: ${order}`;
+                el.innerHTML = dists.map(x => `${x.name}: ${x.d.toFixed(2)}`).join("<br>") + 
+                               `<br>Order: ${dists.map(x => x.name).join(" → ")}`;
             }
         }
         // GES: floater culling (d_i < D_S + δ)
-        if (this.blueMeshGes && this.redMeshGes && this.greenMeshGes) {
-            const dS = this.cameraGes.position.distanceTo(this.blueMeshGes.position);
-            const dR = this.cameraGes.position.distanceTo(this.redMeshGes.position);
-            const dG = this.cameraGes.position.distanceTo(this.greenMeshGes.position);
-            const deltaEl = document.getElementById("compDeltaSlider") as HTMLInputElement;
-            const delta = deltaEl ? parseFloat(deltaEl.value) : 0.5;
-            const cullR = dR > dS + delta;
-            const cullG = dG > dS + delta;
-            this.redMeshGes.visible = !cullR;
-            this.greenMeshGes.visible = !cullG;
-            const el = document.getElementById("debug-ges");
-            if (el) {
-                el.innerHTML = `Surfel: ${dS.toFixed(2)}<br>Red: ${dR.toFixed(2)} ${cullR ? "❌" : "✅"}<br>Green: ${dG.toFixed(2)} ${cullG ? "❌" : "✅"}`;
+        if (this.meshesGes.length > 0) {
+            const surfelMesh = this.meshesGes.find(m => m.splat.isSurfel)?.mesh;
+            if (surfelMesh) {
+                const dS = this.cameraGes.position.distanceTo(surfelMesh.position);
+                const deltaEl = document.getElementById("compDeltaSlider") as HTMLInputElement;
+                const delta = deltaEl ? parseFloat(deltaEl.value) : 0.5;
+
+                const debugLines: string[] = [`Surfel: ${dS.toFixed(2)}`];
+
+                this.meshesGes.forEach(m => {
+                    if (!m.splat.isSurfel) {
+                        const dG = this.cameraGes.position.distanceTo(m.mesh.position);
+                        const cull = dG > dS + delta;
+                        m.mesh.visible = !cull;
+                        debugLines.push(`${m.splat.name}: ${dG.toFixed(2)} ${cull ? "❌" : "✅"}`);
+                    }
+                });
+
+                const el = document.getElementById("debug-ges");
+                if (el) {
+                    el.innerHTML = debugLines.join("<br>");
+                }
             }
         }
         this.renderer3dgs.render(this.scene3dgs, this.camera3dgs);

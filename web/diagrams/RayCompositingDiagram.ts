@@ -43,17 +43,11 @@ export class RayCompositingDiagram {
                 s,
                 effDepth,
                 projX: CENTER_X + pxRaw,
-                topDownX: wx * 0.35,
-                topDownZ: wz * 0.35,
+                topDownX: wx * 0.8,
+                topDownZ: wz * 0.8,
             };
         });
-        // --- 3DGS sort order (front-to-back by camera depth) ---
-        const sorted3DGS = [...projected].sort((a, b) => a.effDepth - b.effDepth);
-        const orderStr = sorted3DGS.map(p => p.s.name).join(" → ");
-        // Detect sort-order flip for visual flash
-        const sortKey = sorted3DGS.map(p => p.s.name).join(",");
-        const justFlipped = this.prevSortKey !== "" && this.prevSortKey !== sortKey;
-        this.prevSortKey = sortKey;
+        // (Variables removed: Tile-based sorting is now handled inside drawStrip3DGS)
         // ========== TOP: Centered Top-Down Camera Orbit ==========
         const topY = 55;
         ctx.save();
@@ -111,11 +105,10 @@ export class RayCompositingDiagram {
         // 3DGS label
         ctx.fillStyle = "#fff";
         ctx.font = "bold 11px 'Space Grotesk'";
-        ctx.fillText("3DGS — Sorted α-Blending", 15, midY + 10);
-        // Show sort order — flash red when it changes
-        ctx.fillStyle = justFlipped ? "#ff4a5a" : "#888";
-        ctx.font = justFlipped ? "bold 9px monospace" : "9px monospace";
-        ctx.fillText(`Sort: [${orderStr}]${justFlipped ? "  ⚠️ ORDER FLIPPED!" : ""}`, 15, midY + 22);
+        ctx.fillText("3DGS — Tile-Based α-Blending", 15, midY + 10);
+        ctx.fillStyle = "#888";
+        ctx.font = "9px monospace";
+        ctx.fillText("Sort order computed per-tile", 15, midY + 22);
         // GES label
         ctx.fillStyle = "#fff";
         ctx.font = "bold 11px 'Space Grotesk'";
@@ -128,18 +121,18 @@ export class RayCompositingDiagram {
         const curveH = 28;
         const stripY = curveBaseY + 5;
         const stripH = 25;
-        // --- Left: 3DGS (sorted alpha blending) ---
-        this.drawStrip3DGS(ctx, 15, halfW - 10, curveBaseY, curveH, stripY, stripH, sorted3DGS, projected);
+        // --- Left: 3DGS (tile-based alpha blending) ---
+        this.drawStrip3DGS(ctx, 15, halfW - 10, curveBaseY, curveH, stripY, stripH, projected);
         // --- Right: GES (additive + normalize, NO culling) ---
         this.drawStripGES(ctx, halfW + 10, W - 15, curveBaseY, curveH, stripY, stripH, projected);
     }
-    /** 3DGS: sorted front-to-back alpha blending */
+    /** 3DGS: Tile-based sorted alpha blending */
     drawStrip3DGS(
         ctx: CanvasRenderingContext2D,
         x0: number, x1: number,
         baseY: number, curveH: number,
         stripY: number, stripH: number,
-        sorted: any[], all: any[]
+        all: any[]
     ) {
         const w = x1 - x0;
         // Draw baseline
@@ -149,8 +142,10 @@ export class RayCompositingDiagram {
         ctx.moveTo(x0, baseY);
         ctx.lineTo(x1, baseY);
         ctx.stroke();
-        // Draw Gaussian curves back-to-front for proper visual layering
-        const backToFront = [...sorted].reverse();
+
+        // Draw Gaussian curves globally (for visual reference)
+        const globalSorted = [...all].sort((a, b) => a.effDepth - b.effDepth);
+        const backToFront = [...globalSorted].reverse();
         backToFront.forEach(p => {
             ctx.fillStyle = p.s.color;
             ctx.beginPath();
@@ -163,28 +158,69 @@ export class RayCompositingDiagram {
             ctx.lineTo(x1, baseY);
             ctx.fill();
         });
-        // Color strip: alpha compositing front-to-back
-        // C = Σ c_i · α_i · Π_{j<i}(1 - α_j)
+
+        // Color strip container
         ctx.fillStyle = "#09090e";
         ctx.fillRect(x0, stripY, w, stripH);
         ctx.strokeStyle = "rgba(255,255,255,0.08)";
         ctx.strokeRect(x0, stripY, w, stripH);
-        for (let px = x0; px < x1; px += 2) {
-            const screenX = ((px - x0) / w) * 240 + 70;
-            let T = 1.0, cR = 0, cG = 0, cB = 0;
-            // Composite in SORT ORDER (front-to-back)
-            sorted.forEach(p => {
-                const a = gaussWeight(screenX, p.projX, p.s.sigma, p.s.opacity);
-                cR += p.s.rgb[0] * a * T;
-                cG += p.s.rgb[1] * a * T;
-                cB += p.s.rgb[2] * a * T;
-                T *= (1 - a);
+
+        // Tile-based rendering (4 tiles)
+        const numTiles = 4;
+        const tileW = w / numTiles;
+
+        for (let t = 0; t < numTiles; t++) {
+            const tx0 = x0 + t * tileW;
+            const tx1 = tx0 + tileW;
+            const screenTx0 = ((tx0 - x0) / w) * 240 + 70;
+            const screenTx1 = ((tx1 - x0) / w) * 240 + 70;
+
+            // 1. Tile Culling: Only include splats whose 3*sigma radius intersects this tile
+            const tileSplats = all.filter(p => {
+                const minX = p.projX - 3 * p.s.sigma;
+                const maxX = p.projX + 3 * p.s.sigma;
+                return maxX >= screenTx0 && minX <= screenTx1;
             });
-            cR = Math.min(1, cR * 1.3);
-            cG = Math.min(1, cG * 1.3);
-            cB = Math.min(1, cB * 1.3);
-            ctx.fillStyle = `rgb(${cR * 255 | 0},${cG * 255 | 0},${cB * 255 | 0})`;
-            ctx.fillRect(px, stripY, 2, stripH);
+
+            // 2. Tile Sorting: Sort the included splats by center depth
+            const tileSorted = tileSplats.sort((a, b) => a.effDepth - b.effDepth);
+
+            // 3. Tile Rasterization
+            for (let px = tx0; px < tx1; px += 2) {
+                const screenX = ((px - x0) / w) * 240 + 70;
+                let T = 1.0, cR = 0, cG = 0, cB = 0;
+                tileSorted.forEach(p => {
+                    const a = gaussWeight(screenX, p.projX, p.s.sigma, p.s.opacity);
+                    cR += p.s.rgb[0] * a * T;
+                    cG += p.s.rgb[1] * a * T;
+                    cB += p.s.rgb[2] * a * T;
+                    T *= (1 - a);
+                });
+                cR = Math.min(1, cR * 1.3);
+                cG = Math.min(1, cG * 1.3);
+                cB = Math.min(1, cB * 1.3);
+                ctx.fillStyle = `rgb(${cR * 255 | 0},${cG * 255 | 0},${cB * 255 | 0})`;
+                ctx.fillRect(px, stripY, 2, stripH);
+            }
+
+            // Draw tile divider
+            if (t > 0) {
+                ctx.strokeStyle = "rgba(255,255,255,0.2)";
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath();
+                ctx.moveTo(tx0, baseY - curveH - 5);
+                ctx.lineTo(tx0, stripY + stripH);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // Write tile order
+            const orderStr = tileSorted.map(p => p.s.name.substring(0, 1)).join("→");
+            ctx.fillStyle = "rgba(255,255,255,0.6)";
+            ctx.font = "8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(orderStr || "None", tx0 + tileW / 2, stripY - 4);
+            ctx.textAlign = "left";
         }
     }
     /** GES: additive blending + normalization — ALL splats, NO culling.

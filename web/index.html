@@ -462,11 +462,11 @@
     <div id="comparison-container">
         <div class="comparison-left">
             <div class="card" id="card-ray">
-                <h3>Panel A: Sorting Artifacts (Popping)</h3>
+                <h3>Panel A: Tile Sorting &amp; Popping</h3>
                 <div class="card-desc">
-                    <strong>3DGS (Sorted α-Blending):</strong> $C = \sum_{i=1}^{N} c_i \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j)$ — order-dependent! <br>
+                    <strong>3DGS (Tile-Based α-Blending):</strong> $C = \sum_{i=1}^{N} c_i \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j)$ — order-dependent! <br>
                     <strong>GES (Additive + Normalize):</strong> $C = \frac{\sum_{i} c_i \alpha_i}{\sum_{i} \alpha_i}$ — order-independent (sum is commutative). <br>
-                    Drag the camera angle slider. 3DGS must sort splats by depth — when the sort order flips, the color strip <strong>pops</strong> (sudden discontinuous change). GES uses additive accumulation, which is commutative — the result is identical regardless of splat order.
+                    Drag the camera angle slider. 3DGS divides the image into tiles and sorts splats independently per tile. If a splat's radius stops intersecting a tile, it is culled, causing the tile's set of splats (and thus sort order) to change instantly—creating a harsh seam! GES uses additive blending, which perfectly preserves continuity.
                 </div>
                 <div class="control-group">
                     <label for="orderSlider">Camera Angle / Ray Projection <span class="slider-label-val" id="orderValue">0°</span></label>
@@ -495,6 +495,18 @@
                     <input type="range" id="compDeltaSlider" min="0.0" max="1.5" step="0.05" value="0.5">
                 </div>
                 <canvas class="diagram-canvas" id="leaking-canvas"></canvas>
+            </div>
+
+            <div class="card" id="card-reflection">
+                <h3>Panel D: Specular Reflection (Limitation)</h3>
+                <div class="card-desc">
+                    <strong>3DGS:</strong> Models reflections by placing "fake" floaters physically below the surface. Since 3DGS uses pure $\alpha$-blending, the camera sees through the surface to the underground floaters, successfully faking a mirror reflection.<br>
+                    <strong>GES:</strong> Represents the surface with an opaque surfel ($D_S$), which aggressively culls anything underground. Therefore, GES cannot place floaters underground; instead, it places Gaussians <em>just above</em> the surfel to imitate reflection via view-dependent color.
+                </div>
+                <div class="sbs-viewport-container" id="reflection-container" style="height: 250px; margin: 0; display: block; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); background: #0d0c14; position: relative;">
+                    <div style="position: absolute; left: 10px; top: 10px; color: var(--accent-red); font-size: 11px; font-weight: bold; background: rgba(0,0,0,0.5); padding: 4px; border-radius: 4px; z-index: 10;">3DGS (Alpha Blending)</div>
+                    <div style="position: absolute; right: 10px; top: 10px; color: var(--accent-green); font-size: 11px; font-weight: bold; background: rgba(0,0,0,0.5); padding: 4px; border-radius: 4px; z-index: 10;">GES (Surfel + Depth Test)</div>
+                </div>
             </div>
         </div>
 
