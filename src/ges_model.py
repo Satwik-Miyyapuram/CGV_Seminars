@@ -738,9 +738,10 @@ class GESModel(Model):
             print(
                 f"[EVAL] Rendering with {self.surfel.means.shape[0]} surfels and {self.gaussian.means.shape[0]} Gaussians at step {self.step}"
             )
-            print(
-                f"[EVAL] Surfel features_dc range: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]"
-            )
+            if self.surfel.means.shape[0] > 0:
+                print(
+                    f"[EVAL] Surfel features_dc range: [{self.surfel.features_dc.min().item():.4f}, {self.surfel.features_dc.max().item():.4f}]"
+                )
             if self.gaussian.means.shape[0] > 0:
                 print(
                     f"[EVAL] Gaussian features_dc range: [{self.gaussian.features_dc.min().item():.4f}, {self.gaussian.features_dc.max().item():.4f}]"
@@ -874,16 +875,15 @@ class GESModel(Model):
                 absgrad=True,
             )
         else:
-            empty_out = self.get_empty_outputs(width, height, self.background_color)
-            surfel_rgb_base = empty_out["rgb"]
-            assert isinstance(surfel_rgb_base, torch.Tensor)
-            surfel_rgb = surfel_rgb_base.unsqueeze(0).to(self.device)
+            # When there are no surfels, they contribute zero color and opacity.
+            # We initialize surfel_rgb to zeros so that its premultiplied color is black (0),
+            # and surfel_alpha to zeros. If depth is required, we initialize the depth channel to 10.0.
             if render_mode == "RGB+ED":
-                surfel_depth_base = empty_out["depth"]
-                assert isinstance(surfel_depth_base, torch.Tensor)
-                surfel_depth = surfel_depth_base.unsqueeze(0).to(self.device)
-                surfel_rgb = torch.cat([surfel_rgb, surfel_depth], dim=-1)
-            surfel_alpha = torch.zeros_like(surfel_rgb[..., :1])
+                surfel_rgb = torch.zeros((1, height, width, 4), device=self.device)
+                surfel_rgb[..., 3:4] = 10.0
+            else:
+                surfel_rgb = torch.zeros((1, height, width, 3), device=self.device)
+            surfel_alpha = torch.zeros((1, height, width, 1), device=self.device)
             surfel_info = None
 
         if surfel_rgb.shape[-1] == 4:
@@ -1023,42 +1023,46 @@ class GESModel(Model):
 
         gaussian_rgb = gaussian_render[:, ..., :3]
         surfel_rgb_color = surfel_rgb[:, ..., :3]
-        # Compositing: combine surfel and Gaussian contributions with background.
-        #
-        # During the surfel-only phase (steps 0–20k, no Gaussians), we use
-        # standard alpha compositing exactly as Splatfacto does:
-        #   rgb = C_premul + (1 - alpha) * background
-        # This is proven and numerically stable.
-        #
-        # After Gaussians are spawned at step 20k, we apply the paper's Eq. 5:
-        #   C = (C_S + C_G) / (W_S + W_G)
-        # where C_S, C_G are premultiplied color maps and W_S, W_G are their alphas.
         C_S_premul = surfel_rgb_color.squeeze(0)
         W_S = surfel_alpha.squeeze(0)
         C_G_premul = gaussian_rgb.squeeze(0)
         W_G = gaussian_alpha.squeeze(0)
 
-        total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
+        if self.gaussian.means.shape[0] == 0:
+            # During the surfel-only phase (steps 0–20k, no Gaussians), we use
+            # standard alpha compositing exactly as Splatfacto does:
+            #   rgb = C_premul + (1 - alpha) * background
+            # This is proven and numerically stable.
+            total_alpha = W_S
+            rgb = C_S_premul + (1.0 - total_alpha) * background_color
+            rgb = torch.clamp(rgb, 0.0, 1.0)
 
-        # Paper Eq. 5: C = (C_S + C_G) / (W_S + W_G)
-        # Here C_S and C_G in the paper text refer to the premultiplied colors.
-        # This computes the weighted average of the unpremultiplied colors.
-        combined_color = (C_S_premul + C_G_premul) / (W_S + W_G + 1e-5)
-
-        # Then we composite this combined color over the background using total_alpha
-        rgb = combined_color * total_alpha + (1.0 - total_alpha) * background_color
-        rgb = torch.clamp(rgb, 0.0, 1.0)
-
-        if render_mode == "RGB+ED":
-            gaussian_depth = gaussian_render[:, ..., 3:4].squeeze(0)
-            surfel_depth_val = surfel_rgb[:, ..., 3:4].squeeze(0)
-            # Depth compositing: weighted average of Gaussian and surfel depths
-            depth = (gaussian_depth * W_G + surfel_depth_val * W_S) / (W_S + W_G + 1e-5)
-            # BUG 8 FIX: Use total_alpha (already squeezed to [H,W,1]) instead
-            # of gaussian_alpha (which still has batch dim from rasterization)
-            depth = torch.where(total_alpha > 0, depth, depth.detach().max())
+            if render_mode == "RGB+ED":
+                surfel_depth_val = surfel_rgb[:, ..., 3:4].squeeze(0)
+                depth = surfel_depth_val
+                # BUG 8 FIX: Use total_alpha instead of gaussian_alpha
+                depth = torch.where(total_alpha > 0, depth, depth.detach().max())
+            else:
+                depth = None
         else:
-            depth = None
+            # After Gaussians are spawned at step 20k, we apply the paper's Eq. 5:
+            #   C = (C_S + C_G) / (W_S + W_G)
+            # where C_S, C_G are premultiplied color maps and W_S, W_G are their alphas.
+            total_alpha = torch.clamp(W_S + W_G, 0.0, 1.0)
+            combined_color = (C_S_premul + C_G_premul) / (W_S + W_G + 1e-5)
+            rgb = combined_color * total_alpha + (1.0 - total_alpha) * background_color
+            rgb = torch.clamp(rgb, 0.0, 1.0)
+
+            if render_mode == "RGB+ED":
+                gaussian_depth = gaussian_render[:, ..., 3:4].squeeze(0)
+                surfel_depth_val = surfel_rgb[:, ..., 3:4].squeeze(0)
+                # Depth compositing: weighted average of Gaussian and surfel depths
+                depth = (gaussian_depth * W_G + surfel_depth_val * W_S) / (W_S + W_G + 1e-5)
+                # BUG 8 FIX: Use total_alpha (already squeezed to [H,W,1]) instead
+                # of gaussian_alpha (which still has batch dim from rasterization)
+                depth = torch.where(total_alpha > 0, depth, depth.detach().max())
+            else:
+                depth = None
         if background_color.shape[0] == 3 and not self.training:
             background_color = background_color.expand(height, width, 3)
 
