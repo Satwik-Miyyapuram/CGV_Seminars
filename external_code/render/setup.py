@@ -1,6 +1,6 @@
 import os
 import sys
-from setuptools import setup
+from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 # Set a fallback TORCH_CUDA_ARCH_LIST if not present to avoid PyTorch IndexError on GPU-less nodes
@@ -46,6 +46,7 @@ else:
 
 setup(
     name="surfel_rasterizer_extension",
+    packages=['render'],
     ext_modules=[
         CUDAExtension(
             name="surfel_rasterizer_extension",

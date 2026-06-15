@@ -30,8 +30,8 @@ from pytorch_msssim import SSIM
 from torch.nn import Parameter
 from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-
-from external_code.render import rasterization_surfel
+# from surfel_rasterizer_extension.render import rasterize_surfels_to_pixels
+from render import rasterization_surfel
 from ges_strategy import GESStrategy
 from training_schedule import (
     CLAMP_18K_STEP,
@@ -444,7 +444,7 @@ class GESModel(Model):
 
                 # Final pruning logic: use opacity < 0.9 as the threshold.
                 # Since opacities here is already passed through sigmoid, this checks opacity < 90%.
-                thresh_val = torch.Sigmoid(torch.tensor(0.8)).item()
+                thresh_val = torch.sigmoid(torch.tensor(0.8)).item()
                 mask = (opacities >= thresh_val).view(-1)
                 print(f"Using opacity threshold {thresh_val:.5f} for pruning.")
 

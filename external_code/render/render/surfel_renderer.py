@@ -1,8 +1,28 @@
 import os
 import math
+import ctypes
 import torch
 from torch import Tensor
 from typing import Dict, Optional, Tuple, Literal, Union
+
+# Ensure Torch's shared libraries are visible before loading the custom extension.
+def _load_torch_shared_libraries() -> None:
+    torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+    shared_libraries = (
+        "libc10.so",
+        "libtorch.so",
+        "libtorch_cpu.so",
+        "libtorch_python.so",
+        "libc10_cuda.so",
+        "libtorch_cuda.so",
+    )
+    for library_name in shared_libraries:
+        library_path = os.path.join(torch_lib_dir, library_name)
+        if os.path.exists(library_path):
+            ctypes.CDLL(library_path, mode=ctypes.RTLD_GLOBAL)
+
+
+_load_torch_shared_libraries()
 
 # Import CUDA functions from our compiled extension if available
 try:
