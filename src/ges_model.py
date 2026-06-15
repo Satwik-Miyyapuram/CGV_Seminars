@@ -11,6 +11,7 @@ import torch
 
 # Assuming gsplat is in external_code/gsplat and accessible
 from gsplat.rendering import rasterization, rasterization_2dgs
+from external_code.render import rasterization_surfel
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.cameras.rays import RayBundle
@@ -63,6 +64,8 @@ class GESModelConfig(SplatfactoModelConfig):
         4  # Threshold for surfel visibility pruning (synthetic scenes)
     )
     use_real_scene: bool = True  # Whether to use real scene visibility threshold
+    max_num_surfels: int = -1  # Restrict maximum number of surfels during training (-1 to disable)
+    max_num_gaussians: int = -1  # Restrict maximum number of gaussians during training (-1 to disable)
 
 
 class Surfel(torch.nn.Module):
@@ -163,9 +166,18 @@ class GESModel(Model):
         """
 
         if self.seed_points is not None and not self.config.random_init:
+            means = self.seed_points[0]
+            colors = self.seed_points[1]
+            if self.config.max_num_surfels > 0 and means.shape[0] > self.config.max_num_surfels:
+                print(f"Subsampling seed points to max_num_surfels: {self.config.max_num_surfels} (originally {means.shape[0]})")
+                perm = torch.randperm(means.shape[0], device=means.device)[:self.config.max_num_surfels]
+                means = means[perm]
+                colors = colors[perm]
+                self.seed_points = (means, colors)
+
             print("Initializing from seed points...")
-            means = Parameter(self.seed_points[0])
-            self.surfel = Surfel.from_means(means=means, sh_degree=self.config.sh_degree)
+            means_param = Parameter(self.seed_points[0])
+            self.surfel = Surfel.from_means(means=means_param, sh_degree=self.config.sh_degree)
         else:
             self.surfel = Surfel.from_random(
                 rand_size_init=self.config.num_random,
@@ -826,7 +838,7 @@ class GESModel(Model):
             # absolute-value gradient (means2d.absgrad) needed for effective
             # densification. Without this, the strategy falls back to .grad
             # which suffers from positive/negative cancellation.
-            surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_2dgs(
+            surfel_rgb, surfel_alpha, _, _, _, _, surfel_info = rasterization_surfel(
                 means=surfel_crop.means,
                 quats=surfel_crop.quats,
                 scales=torch.exp(surfel_crop.scales),

@@ -233,8 +233,9 @@ class GESStrategy(Strategy):
         mutated = False
         if step >= self.refine_start_iter and step % self.refine_every == 0:
             if is_surfel_phase:
+                max_num = getattr(model.config, "max_num_surfels", -1)
                 num_duplicates, n_split = self._grow_gs(
-                    params, optimizers, state, step, is_surfel_phase
+                    params, optimizers, state, step, is_surfel_phase, max_num
                 )
                 target_type = "Surfels"
                 if self.verbose or is_surfel_phase:  # Always log surfel densification
@@ -328,10 +329,15 @@ class GESStrategy(Strategy):
         state: dict[str, Any],
         step: int,
         is_surfel: bool = False,
+        max_num: int = -1,
     ):
         count = state["count"]
         grads = state["grad2d"] / count.clamp_min(1)
         is_grad_high = grads > self.grow_grad2d
+
+        original_num = params["means"].shape[0]
+        if max_num > 0 and original_num >= max_num:
+            is_grad_high = torch.zeros_like(is_grad_high)
 
         # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
         # projection and receives 0 gradient. It never shrinks during optimization.
@@ -343,23 +349,28 @@ class GESStrategy(Strategy):
             <= self.grow_scale3d * state["scene_scale"]
         )
         is_duplicate = is_grad_high & is_small
-        num_duplicates = is_duplicate.sum().item()
-
-        # BUG 15 FIX: Force split primitives that are getting dangerously close to the
-        # pruning threshold (90% of it). If we don't do this, surfels covering flat
-        # regions (low gradient) will simply grow until they hit prune_scale3d and
-        # get abruptly deleted, leaving unrecoverable holes.
-        # CRITICAL UPDATE: We ONLY force split solid objects (opacity > 0.8). If we
-        # force split fuzzy floaters, they exponentially explode into hundreds of
-        # thousands of garbage primitives! Floaters should just hit the limit and die.
-        # scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
-        # is_solid = torch.sigmoid(params["opacities"].flatten()) > 0.8
-        # is_too_big_for_comfort = (
-        #     torch.exp(scales_to_check).max(dim=-1).values
-        #     > self.prune_scale3d * state["scene_scale"] * 0.9
-        # ) & is_solid
         is_split = is_grad_high & ~is_small
-        # is_split |= state["radii"] > self.grow_scale2d
+
+        if max_num > 0:
+            allowed_growth = max(0, max_num - original_num)
+            if allowed_growth <= 0:
+                is_duplicate.zero_()
+                is_split.zero_()
+            else:
+                # Limit duplicates to allowed_growth
+                dup_indices = torch.where(is_duplicate)[0]
+                if len(dup_indices) > allowed_growth:
+                    is_duplicate[dup_indices[allowed_growth:]] = False
+                    allowed_growth = 0
+                else:
+                    allowed_growth -= len(dup_indices)
+
+                # Limit splits to remaining allowed_growth
+                split_indices = torch.where(is_split)[0]
+                if len(split_indices) > allowed_growth:
+                    is_split[split_indices[allowed_growth:]] = False
+
+        num_duplicates = is_duplicate.sum().item()
         n_split = is_split.sum().item()
 
         if num_duplicates > 0:
@@ -595,6 +606,28 @@ class GESStrategy(Strategy):
 
         device = model.device
 
+        max_num_gaussians = getattr(model.config, "max_num_gaussians", -1)
+        if max_num_gaussians > 0:
+            current_num_gaussians = model.gaussian.means.shape[0]
+            allowed_new_gaussians = max_num_gaussians - current_num_gaussians
+            if allowed_new_gaussians <= 0:
+                print(f"Cannot spawn Gaussians: limit of {max_num_gaussians} reached.")
+                return
+            if num_new_gaussians > allowed_new_gaussians:
+                print(f"Limiting spawned Gaussians from saved seeds to {allowed_new_gaussians} due to max_num_gaussians limit.")
+                saved_gaussian_seeds = saved_gaussian_seeds[:allowed_new_gaussians]
+                num_new_gaussians = allowed_new_gaussians
+
+                # Slice the saved attributes on model to keep their sizes matched
+                if hasattr(model, "saved_gaussian_features_dc") and model.saved_gaussian_features_dc.shape[0] > 0:
+                    model.saved_gaussian_features_dc = model.saved_gaussian_features_dc[:allowed_new_gaussians]
+                if hasattr(model, "saved_gaussian_features_rest") and model.saved_gaussian_features_rest.shape[0] > 0:
+                    model.saved_gaussian_features_rest = model.saved_gaussian_features_rest[:allowed_new_gaussians]
+                if hasattr(model, "saved_gaussian_scales") and model.saved_gaussian_scales.shape[0] > 0:
+                    model.saved_gaussian_scales = model.saved_gaussian_scales[:allowed_new_gaussians]
+                if hasattr(model, "saved_gaussian_quats") and model.saved_gaussian_quats.shape[0] > 0:
+                    model.saved_gaussian_quats = model.saved_gaussian_quats[:allowed_new_gaussians]
+
         # Get saved features if they exist, otherwise fallback to mean surfel features
         if (
             hasattr(model, "saved_gaussian_features_dc")
@@ -673,10 +706,10 @@ class GESStrategy(Strategy):
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
-            return Parameter(new_data[name], requires_grad=p.requires_grad)
+            return Parameter(torch.cat([p, new_data[name]], dim=0), requires_grad=p.requires_grad)
 
         def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
-            return torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)
+            return torch.cat([v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0)
 
         params = model.get_gaussian_param_dict()
         optimizers = {
@@ -745,6 +778,21 @@ class GESStrategy(Strategy):
             return
 
         device = model.device
+
+        max_num_gaussians = getattr(model.config, "max_num_gaussians", -1)
+        if max_num_gaussians > 0:
+            current_num_gaussians = model.gaussian.means.shape[0]
+            allowed_new_gaussians = max_num_gaussians - current_num_gaussians
+            if allowed_new_gaussians <= 0:
+                print(f"Cannot spawn Gaussians from error seeds: limit of {max_num_gaussians} reached.")
+                return
+            if num_new_gaussians > allowed_new_gaussians:
+                print(f"Limiting spawned Gaussians from error seeds to {allowed_new_gaussians} due to max_num_gaussians limit.")
+                spawn_pts = spawn_pts[:allowed_new_gaussians]
+                spawn_cols = spawn_cols[:allowed_new_gaussians]
+                num_new_gaussians = allowed_new_gaussians
+
+        device = model.device
         dim_sh = num_sh_bases(model.config.sh_degree)
 
         # Initialize features_dc from ground truth colors
@@ -764,14 +812,14 @@ class GESStrategy(Strategy):
             print(
                 f"Warning: k_nearest_sklearn failed during error spawn: {e}. Falling back to scene scale."
             )
-            scene_scale = self.strategy_state["gaussians"]["scene_scale"]
+            scene_scale = model.strategy_state["gaussians"]["scene_scale"]
             import math
 
             safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
             scales = torch.ones((num_new_gaussians, 3), device=device) * safe_scale
 
         # Clamp scales to safe thickness/size
-        scene_scale = self.strategy_state["gaussians"]["scene_scale"]
+        scene_scale = model.strategy_state["gaussians"]["scene_scale"]
         import math
 
         safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
@@ -791,10 +839,10 @@ class GESStrategy(Strategy):
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
-            return Parameter(new_data[name], requires_grad=p.requires_grad)
+            return Parameter(torch.cat([p, new_data[name]], dim=0), requires_grad=p.requires_grad)
 
         def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
-            return torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)
+            return torch.cat([v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0)
 
         params = model.get_gaussian_param_dict()
         optimizers = {
