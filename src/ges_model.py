@@ -10,8 +10,7 @@ from typing import Any
 import torch
 
 # Assuming gsplat is in external_code/gsplat and accessible
-from gsplat.rendering import rasterization, rasterization_2dgs
-from external_code.render import rasterization_surfel
+from gsplat.rendering import rasterization
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.cameras.rays import RayBundle
@@ -32,6 +31,7 @@ from torch.nn import Parameter
 from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
+from external_code.render import rasterization_surfel
 from ges_strategy import GESStrategy
 from training_schedule import (
     CLAMP_18K_STEP,
@@ -65,7 +65,9 @@ class GESModelConfig(SplatfactoModelConfig):
     )
     use_real_scene: bool = True  # Whether to use real scene visibility threshold
     max_num_surfels: int = -1  # Restrict maximum number of surfels during training (-1 to disable)
-    max_num_gaussians: int = -1  # Restrict maximum number of gaussians during training (-1 to disable)
+    max_num_gaussians: int = (
+        -1
+    )  # Restrict maximum number of gaussians during training (-1 to disable)
 
 
 class Surfel(torch.nn.Module):
@@ -169,8 +171,12 @@ class GESModel(Model):
             means = self.seed_points[0]
             colors = self.seed_points[1]
             if self.config.max_num_surfels > 0 and means.shape[0] > self.config.max_num_surfels:
-                print(f"Subsampling seed points to max_num_surfels: {self.config.max_num_surfels} (originally {means.shape[0]})")
-                perm = torch.randperm(means.shape[0], device=means.device)[:self.config.max_num_surfels]
+                print(
+                    f"Subsampling seed points to max_num_surfels: {self.config.max_num_surfels} (originally {means.shape[0]})"
+                )
+                perm = torch.randperm(means.shape[0], device=means.device)[
+                    : self.config.max_num_surfels
+                ]
                 means = means[perm]
                 colors = colors[perm]
                 self.seed_points = (means, colors)

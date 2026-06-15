@@ -614,18 +614,38 @@ class GESStrategy(Strategy):
                 print(f"Cannot spawn Gaussians: limit of {max_num_gaussians} reached.")
                 return
             if num_new_gaussians > allowed_new_gaussians:
-                print(f"Limiting spawned Gaussians from saved seeds to {allowed_new_gaussians} due to max_num_gaussians limit.")
+                print(
+                    f"Limiting spawned Gaussians from saved seeds to {allowed_new_gaussians} due to max_num_gaussians limit."
+                )
                 saved_gaussian_seeds = saved_gaussian_seeds[:allowed_new_gaussians]
                 num_new_gaussians = allowed_new_gaussians
 
                 # Slice the saved attributes on model to keep their sizes matched
-                if hasattr(model, "saved_gaussian_features_dc") and model.saved_gaussian_features_dc.shape[0] > 0:
-                    model.saved_gaussian_features_dc = model.saved_gaussian_features_dc[:allowed_new_gaussians]
-                if hasattr(model, "saved_gaussian_features_rest") and model.saved_gaussian_features_rest.shape[0] > 0:
-                    model.saved_gaussian_features_rest = model.saved_gaussian_features_rest[:allowed_new_gaussians]
-                if hasattr(model, "saved_gaussian_scales") and model.saved_gaussian_scales.shape[0] > 0:
-                    model.saved_gaussian_scales = model.saved_gaussian_scales[:allowed_new_gaussians]
-                if hasattr(model, "saved_gaussian_quats") and model.saved_gaussian_quats.shape[0] > 0:
+                if (
+                    hasattr(model, "saved_gaussian_features_dc")
+                    and model.saved_gaussian_features_dc.shape[0] > 0
+                ):
+                    model.saved_gaussian_features_dc = model.saved_gaussian_features_dc[
+                        :allowed_new_gaussians
+                    ]
+                if (
+                    hasattr(model, "saved_gaussian_features_rest")
+                    and model.saved_gaussian_features_rest.shape[0] > 0
+                ):
+                    model.saved_gaussian_features_rest = model.saved_gaussian_features_rest[
+                        :allowed_new_gaussians
+                    ]
+                if (
+                    hasattr(model, "saved_gaussian_scales")
+                    and model.saved_gaussian_scales.shape[0] > 0
+                ):
+                    model.saved_gaussian_scales = model.saved_gaussian_scales[
+                        :allowed_new_gaussians
+                    ]
+                if (
+                    hasattr(model, "saved_gaussian_quats")
+                    and model.saved_gaussian_quats.shape[0] > 0
+                ):
                     model.saved_gaussian_quats = model.saved_gaussian_quats[:allowed_new_gaussians]
 
         # Get saved features if they exist, otherwise fallback to mean surfel features
@@ -709,7 +729,9 @@ class GESStrategy(Strategy):
             return Parameter(torch.cat([p, new_data[name]], dim=0), requires_grad=p.requires_grad)
 
         def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
-            return torch.cat([v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0)
+            return torch.cat(
+                [v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0
+            )
 
         params = model.get_gaussian_param_dict()
         optimizers = {
@@ -784,10 +806,14 @@ class GESStrategy(Strategy):
             current_num_gaussians = model.gaussian.means.shape[0]
             allowed_new_gaussians = max_num_gaussians - current_num_gaussians
             if allowed_new_gaussians <= 0:
-                print(f"Cannot spawn Gaussians from error seeds: limit of {max_num_gaussians} reached.")
+                print(
+                    f"Cannot spawn Gaussians from error seeds: limit of {max_num_gaussians} reached."
+                )
                 return
             if num_new_gaussians > allowed_new_gaussians:
-                print(f"Limiting spawned Gaussians from error seeds to {allowed_new_gaussians} due to max_num_gaussians limit.")
+                print(
+                    f"Limiting spawned Gaussians from error seeds to {allowed_new_gaussians} due to max_num_gaussians limit."
+                )
                 spawn_pts = spawn_pts[:allowed_new_gaussians]
                 spawn_cols = spawn_cols[:allowed_new_gaussians]
                 num_new_gaussians = allowed_new_gaussians
@@ -842,7 +868,9 @@ class GESStrategy(Strategy):
             return Parameter(torch.cat([p, new_data[name]], dim=0), requires_grad=p.requires_grad)
 
         def optimizer_fn(key: str, v: torch.Tensor) -> torch.Tensor:
-            return torch.cat([v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0)
+            return torch.cat(
+                [v, torch.zeros((num_new_gaussians, *v.shape[1:]), device=device)], dim=0
+            )
 
         params = model.get_gaussian_param_dict()
         optimizers = {
