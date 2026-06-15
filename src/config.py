@@ -36,7 +36,16 @@ for name, optimizer in base_optimizer_config.items():
         )
     else:
         scheduler = None
-    ges_optimizers[f'surfel_{name}'] = {"optimizer": optimizer, "scheduler": scheduler}
+
+    if name == "opacities":
+        # Surfel opacities are scaled by 255.0 in the CUDA shader (representing tau in [0, 255]).
+        # To prevent boundary-only gradient shrinkage from aggressively pruning all surfels
+        # before step 500, we use a 5x smaller learning rate of 0.01 for surfel opacities.
+        surfel_opt = AdamOptimizerConfig(lr=1e-2, weight_decay=1e-15)
+    else:
+        surfel_opt = optimizer
+
+    ges_optimizers[f'surfel_{name}'] = {"optimizer": surfel_opt, "scheduler": scheduler}
     ges_optimizers[f'gaussian_{name}'] = {"optimizer": optimizer, "scheduler": scheduler}
 ges_method = MethodSpecification(
     config=TrainerConfig(

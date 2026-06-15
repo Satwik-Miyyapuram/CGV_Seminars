@@ -108,7 +108,7 @@ class Surfel(torch.nn.Module):
         dim_sh = num_sh_bases(sh_degree)
         features_dc = Parameter(torch.zeros((num_points, 3)))
         features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3)))  # For future use
-        opacities = Parameter(torch.ones((num_points, 1)) * 0.1)
+        opacities = Parameter(torch.logit(0.01 * torch.ones((num_points, 1))))
         return cls(means, quats, scales, opacities, features_dc, features_rest)
 
 
@@ -749,6 +749,14 @@ class GESModel(Model):
 
         if self.training:
             assert camera.shape[0] == 1, "Only one camera at a time"
+            if self.step % 50 == 0:
+                if self.surfel.means.shape[0] > 0:
+                    sig_ops = torch.sigmoid(self.surfel.opacities.detach())
+                    print(
+                        f"[TRAIN DEBUG] Step {self.step}: {self.surfel.means.shape[0]} Surfels. "
+                        f"Opacities: min={sig_ops.min().item():.6f}, max={sig_ops.max().item():.6f}, mean={sig_ops.mean().item():.6f}",
+                        flush=True
+                    )
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
             # Save the first training camera to render progress from a fixed view
             if not hasattr(self, "fixed_camera"):
