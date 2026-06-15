@@ -1,6 +1,12 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
+/**
+ * Reflection3DViewer illustrates a limitation of the GES representation.
+ * 3DGS simulates specular reflections by placing transparent floaters below a floor.
+ * In contrast, GES's opaque surfel blocks underground floaters, meaning specular
+ * reflections must be faked by placing highlights just above the surfel.
+ */
 export class Reflection3DViewer {
     private container: HTMLElement;
     private renderer: THREE.WebGLRenderer;
@@ -13,39 +19,43 @@ export class Reflection3DViewer {
         this.container = document.getElementById("reflection-container") as HTMLElement;
         if (!this.container) return;
 
-        // Renderer Setup
+        // Renderer configuration with scissor testing enabled for side-by-side splits
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.setScissorTest(true);
         this.container.appendChild(this.renderer.domElement);
 
-        // Camera & Controls Setup
+        // Split camera setup (Shared for synchronized movements)
         this.camera = new THREE.PerspectiveCamera(45, (this.container.clientWidth / 2) / this.container.clientHeight, 0.1, 100);
         this.camera.position.set(0, 1.5, 3.5);
+        
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
         this.controls.target.set(0, 0, 0);
 
-        // Scenes Setup
         this.scene3DGS = new THREE.Scene();
         this.sceneGES = new THREE.Scene();
 
+        // Populate side-by-side scenes
         this.buildScene(this.scene3DGS, false);
         this.buildScene(this.sceneGES, true);
 
-        // Animation Loop
+        // Bind and launch loop
         this.animate = this.animate.bind(this);
         this.animate();
 
         window.addEventListener('resize', this.handleResize.bind(this));
     }
 
+    /**
+     * Build the floor and splats for both 3DGS and GES views.
+     */
     private buildScene(scene: THREE.Scene, isGES: boolean) {
         const splatGeo = new THREE.PlaneGeometry(0.3, 0.3);
         const floorGeo = new THREE.PlaneGeometry(2.5, 2.5);
 
-        // Generate Gaussian Texture
+        // Generate Gaussian Alpha Texture dynamically
         const canvas = document.createElement('canvas');
         canvas.width = 128;
         canvas.height = 128;
@@ -57,7 +67,6 @@ export class Reflection3DViewer {
         context.fillRect(0, 0, 128, 128);
         const gaussianTex = new THREE.CanvasTexture(canvas);
 
-        // Helper to create splat material
         const createMat = (colorHex: number, opacity: number, depthWrite: boolean, blending: THREE.Blending, isFloor: boolean = false) => {
             return new THREE.MeshBasicMaterial({
                 color: colorHex,
@@ -66,50 +75,45 @@ export class Reflection3DViewer {
                 opacity: opacity,
                 depthWrite: depthWrite,
                 blending: blending,
-                alphaMap: isFloor && isGES ? null : gaussianTex, // GES floor is a solid surfel, everything else is a Gaussian
-                alphaTest: 0.01 // Help WebGL sorting
+                alphaMap: isFloor && isGES ? null : gaussianTex, // GES floor is a solid surfel, others are Gaussians
+                alphaTest: 0.01
             });
         };
 
-        // 1. "Shiny Floor"
-        // 3DGS: The floor is made of Gaussians (alpha blended, no depth write). We simulate this with a giant Gaussian.
-        // GES: The floor is an opaque Surfel (depthWrite: true, culling objects behind it). Solid square.
+        // 1. Floor configuration
+        // 3DGS floor: Alpha-blended semi-transparent Gaussian plane
+        // GES floor: Solid opaque Surfel plane writing to depth buffer
         const floorMat = createMat(
             0x4a4a5a, 
-            isGES ? 1.0 : 0.6, // GES surfel is opaque
-            isGES,             // GES writes depth for the surfel
+            isGES ? 1.0 : 0.6,
+            isGES,
             isGES ? THREE.AdditiveBlending : THREE.NormalBlending,
-            true               // Is Floor
+            true
         );
         const floor = new THREE.Mesh(floorGeo, floorMat);
         floor.rotation.x = -Math.PI / 2;
         floor.position.y = 0;
         scene.add(floor);
 
-        // 2. Main Object (Above Floor)
+        // 2. Float Splat Object (floating above the floor)
         const mainMat = createMat(0xff9f43, 0.9, false, isGES ? THREE.AdditiveBlending : THREE.NormalBlending);
         const mainObject = new THREE.Mesh(splatGeo, mainMat);
         mainObject.position.set(0, 0.8, 0);
         mainObject.userData.isBillboard = true;
         scene.add(mainObject);
 
-        // 3. Fake Reflection Object
-        // 3DGS: Places the reflected Gaussian physically UNDERGROUND (e.g. y = -0.8). It shows through the semi-transparent floor.
-        // GES: Since the surfel culls anything underground, GES must place Gaussians JUST ABOVE the surfel (e.g. y = 0.05) to model specular reflections.
+        // 3. Specular Reflection Representation
+        // 3DGS reflection: Placed underground (y = -0.8), visible through transparent floor
+        // GES reflection: Placed slightly above floor (y = 0.05) and scaled to represent specular reflection
         const reflectMat = createMat(0xff9f43, 0.6, false, isGES ? THREE.AdditiveBlending : THREE.NormalBlending);
         const mirroredObject = new THREE.Mesh(splatGeo, reflectMat);
         
         if (isGES) {
-            // GES: Floater placed just above the surfel to fake reflection
             mirroredObject.position.set(0, 0.05, 0);
-            
-            // To make it look like a reflection on the floor, we'll keep it flat against the surfel
-            // instead of billboarding it like a floating ball
             mirroredObject.rotation.x = -Math.PI / 2;
-            mirroredObject.scale.set(3, 3, 1); // Widen it to look like a glossy highlight
+            mirroredObject.scale.set(3, 3, 1);
             mirroredObject.userData.isBillboard = false;
         } else {
-            // 3DGS: Reflected object placed underground
             mirroredObject.position.set(0, -0.8, 0);
             mirroredObject.userData.isBillboard = true;
         }
@@ -117,6 +121,9 @@ export class Reflection3DViewer {
         scene.add(mirroredObject);
     }
 
+    /**
+     * Resizing handler.
+     */
     public handleResize() {
         if (!this.container) return;
         const width = this.container.clientWidth;
@@ -126,6 +133,9 @@ export class Reflection3DViewer {
         this.camera.updateProjectionMatrix();
     }
 
+    /**
+     * Billboard handler making splats face the camera.
+     */
     private updateBillboards(scene: THREE.Scene) {
         scene.traverse((child) => {
             if (child instanceof THREE.Mesh && child.userData.isBillboard) {
@@ -145,12 +155,12 @@ export class Reflection3DViewer {
         const height = this.container.clientHeight;
         const hw = width / 2;
 
-        // Render Left (3DGS)
+        // Render Left Viewport: 3DGS (Alpha Blending)
         this.renderer.setScissor(0, 0, hw, height);
         this.renderer.setViewport(0, 0, hw, height);
         this.renderer.render(this.scene3DGS, this.camera);
 
-        // Render Right (GES)
+        // Render Right Viewport: GES (Surfel depth testing)
         this.renderer.setScissor(hw, 0, hw, height);
         this.renderer.setViewport(hw, 0, hw, height);
         this.renderer.render(this.sceneGES, this.camera);
