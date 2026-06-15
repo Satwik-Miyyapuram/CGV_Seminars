@@ -381,9 +381,9 @@ __global__ void rasterize_to_pixels_surfel_fwd_kernel(
             const float gauss_weight = min(gauss_weight_3d, gauss_weight_2d);
 
             const float sigma = 0.5f * gauss_weight;
-            const float g = __expf(-sigma);
+            const float exp_neg_sigma = __expf(-sigma);
             float alpha = 0.0f;
-            if (sigma >= 0.f && g >= ALPHA_THRESHOLD) {
+            if (sigma >= 0.f && exp_neg_sigma >= ALPHA_THRESHOLD) {
                 alpha = opac;
             }
 
@@ -399,15 +399,15 @@ __global__ void rasterize_to_pixels_surfel_fwd_kernel(
             }
 
             // run volumetric rendering..
-            int32_t g = id_batch[t];
+            int32_t prim_id = id_batch[t];
             const float vis = alpha * T;
-            const float *c_ptr = colors + g * CDIM;
+            const float *c_ptr = colors + prim_id * CDIM;
 #pragma unroll
             for (uint32_t k = 0; k < CDIM; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
             }
 
-            const float *n_ptr = normals + g * 3;
+            const float *n_ptr = normals + prim_id * 3;
 #pragma unroll
             for (uint32_t k = 0; k < 3; ++k) {
                 normal_out[k] += n_ptr[k] * vis;

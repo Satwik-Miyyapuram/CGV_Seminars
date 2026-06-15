@@ -594,7 +594,7 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
                 warpSum(v_xy_abs_local, warp);
             }
             warpSum(v_opacity_local, warp);
-            int32_t g = id_batch[t]; // flatten index in [I * N] or [nnz]
+            int32_t prim_id = id_batch[t]; // flatten index in [I * N] or [nnz]
 
             /**
              * ==================================================
@@ -602,20 +602,20 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
              * ==================================================
              */
             if (warp.thread_rank() == 0) {
-                float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
+                float *v_rgb_ptr = (float *)(v_colors) + CDIM * prim_id;
 #pragma unroll
                 for (uint32_t k = 0; k < CDIM; ++k) {
                     gpuAtomicAdd(v_rgb_ptr + k, v_rgb_local[k]);
                 }
 
-                float *v_normal_ptr = (float *)(v_normals) + 3 * g;
+                float *v_normal_ptr = (float *)(v_normals) + 3 * prim_id;
 #pragma unroll
                 for (uint32_t k = 0; k < 3; ++k) {
                     gpuAtomicAdd(v_normal_ptr + k, v_normal_local[k]);
                 }
 
                 float *v_ray_transforms_ptr =
-                    (float *)(v_ray_transforms) + 9 * g;
+                    (float *)(v_ray_transforms) + 9 * prim_id;
                 gpuAtomicAdd(v_ray_transforms_ptr, v_u_M_local.x);
                 gpuAtomicAdd(v_ray_transforms_ptr + 1, v_u_M_local.y);
                 gpuAtomicAdd(v_ray_transforms_ptr + 2, v_u_M_local.z);
@@ -626,23 +626,23 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
                 gpuAtomicAdd(v_ray_transforms_ptr + 7, v_w_M_local.y);
                 gpuAtomicAdd(v_ray_transforms_ptr + 8, v_w_M_local.z);
 
-                float *v_xy_ptr = (float *)(v_means2d) + 2 * g;
+                float *v_xy_ptr = (float *)(v_means2d) + 2 * prim_id;
                 gpuAtomicAdd(v_xy_ptr, v_xy_local.x);
                 gpuAtomicAdd(v_xy_ptr + 1, v_xy_local.y);
 
                 if (v_means2d_abs != nullptr) {
-                    float *v_xy_abs_ptr = (float *)(v_means2d_abs) + 2 * g;
+                    float *v_xy_abs_ptr = (float *)(v_means2d_abs) + 2 * prim_id;
                     gpuAtomicAdd(v_xy_abs_ptr, v_xy_abs_local.x);
                     gpuAtomicAdd(v_xy_abs_ptr + 1, v_xy_abs_local.y);
                 }
 
-                gpuAtomicAdd(v_opacities + g, v_opacity_local);
+                gpuAtomicAdd(v_opacities + prim_id, v_opacity_local);
             }
 
             if (valid) {
-                float *v_densify_ptr = (float *)(v_densify) + 2 * g;
+                float *v_densify_ptr = (float *)(v_densify) + 2 * prim_id;
                 float *v_ray_transforms_ptr =
-                    (float *)(v_ray_transforms) + 9 * g;
+                    (float *)(v_ray_transforms) + 9 * prim_id;
                 float depth = w_M.z;
                 v_densify_ptr[0] = v_ray_transforms_ptr[2] * depth;
                 v_densify_ptr[1] = v_ray_transforms_ptr[5] * depth;
