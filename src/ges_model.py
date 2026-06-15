@@ -830,8 +830,30 @@ class GESModel(Model):
         # {surfel_crop.quats.device}, scales on {surfel_crop.scales.device}, opacities on
         # {surfel_crop.opacities.device}")
         # rasterization of surfels
+        # rasterization of surfels
+        if self.step >= 500:
+            with open("debug_strategy.txt", "a") as f:
+                f.write(f"\n--- Step {self.step} get_outputs ---\n")
+                f.write(f"training: {self.training}\n")
+                f.write(f"torch.is_grad_enabled(): {torch.is_grad_enabled()}\n")
+                f.write(f"surfel_crop.means.shape: {list(surfel_crop.means.shape)}\n")
+                f.write(f"surfel_crop.means.requires_grad: {surfel_crop.means.requires_grad}\n")
         if surfel_crop.means.shape[0] > 0:
             opacities = torch.sigmoid(surfel_crop.opacities.squeeze(-1))
+            if self.step >= 500:
+                with open("debug_strategy.txt", "a") as f:
+                    f.write("Entering surfel rasterization path...\n")
+                    f.write(f"surfel_crop.quats.requires_grad: {surfel_crop.quats.requires_grad}\n")
+                    f.write(
+                        f"surfel_crop.scales.requires_grad: {surfel_crop.scales.requires_grad}\n"
+                    )
+                    f.write(
+                        f"surfel_crop.opacities.requires_grad: {surfel_crop.opacities.requires_grad}\n"
+                    )
+                    f.write(f"opacities.requires_grad: {opacities.requires_grad}\n")
+                    f.write(f"surfel_color_crop.requires_grad: {surfel_color_crop.requires_grad}\n")
+                    f.write(f"viewmat.requires_grad: {viewmat.requires_grad}\n")
+                    f.write(f"intrinsic_mat.requires_grad: {intrinsic_mat.requires_grad}\n")
             # BUG 4 FIX: Pass absgrad=True so the rasterizer computes the
             # absolute-value gradient (means2d.absgrad) needed for effective
             # densification. Without this, the strategy falls back to .grad
@@ -1227,6 +1249,31 @@ class GESModel(Model):
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
+
+        if not Ll1.requires_grad:
+            print(f"\n[DIAGNOSTIC] Step {self.step}: Ll1 does not require grad!")
+            print(f"  torch.is_grad_enabled(): {torch.is_grad_enabled()}")
+            print(f"  pred_img.requires_grad: {pred_img.requires_grad}")
+            print(f"  pred_img.grad_fn: {pred_img.grad_fn}")
+            if "surfels" in self.info and self.info["surfels"] is not None:
+                print(
+                    f"  surfels means2d requires_grad: {self.info['surfels']['means2d'].requires_grad}"
+                )
+                print(
+                    f"  surfels opacities requires_grad: {self.info['surfels']['opacities'].requires_grad}"
+                )
+            print(f"  surfel means requires_grad: {self.surfel.means.requires_grad}")
+            print(
+                f"  surfel colors (features_dc) requires_grad: {self.surfel.features_dc.requires_grad}"
+            )
+            print(f"  gaussian means requires_grad: {self.gaussian.means.requires_grad}")
+            print(
+                f"  gaussian colors (features_dc) requires_grad: {self.gaussian.features_dc.requires_grad}"
+            )
+            req_grad_params = [
+                name for name, param in self.named_parameters() if param.requires_grad
+            ]
+            print(f"  All parameters requiring grad: {req_grad_params}\n")
 
         if self.training and self.step % 100 == 0:
             self.l1_loss_history.append((self.step, Ll1.item()))

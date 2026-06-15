@@ -333,6 +333,14 @@ class GESStrategy(Strategy):
     ):
         count = state["count"]
         grads = state["grad2d"] / count.clamp_min(1)
+        if step >= 500:
+            with open("debug_strategy.txt", "a") as f:
+                f.write(f"\n--- Step {step} grow ---\n")
+                f.write(f"grow_grad2d: {self.grow_grad2d}\n")
+                f.write(
+                    f"grads: min={grads.min().item():.6f}, max={grads.max().item():.6f}, mean={grads.mean().item():.6f}\n"
+                )
+                f.write(f"scene_scale: {state['scene_scale']}\n")
         is_grad_high = grads > self.grow_grad2d
 
         original_num = params["means"].shape[0]
@@ -400,7 +408,15 @@ class GESStrategy(Strategy):
         is_surfel: bool = False,
     ):
         prune_opa_thresh = self.prune_opa if is_surfel else 0.01
-        is_prune = torch.sigmoid(params["opacities"].flatten()) < prune_opa_thresh
+        sig_opacities = torch.sigmoid(params["opacities"].flatten())
+        is_prune = sig_opacities < prune_opa_thresh
+        if step >= 500:
+            with open("debug_strategy.txt", "a") as f:
+                f.write(f"\n--- Step {step} prune ---\n")
+                f.write(f"prune_opa_thresh: {prune_opa_thresh}\n")
+                f.write(
+                    f"opacities (sigmoid): min={sig_opacities.min().item():.6f}, max={sig_opacities.max().item():.6f}, mean={sig_opacities.mean().item():.6f}\n"
+                )
         if step > self.reset_every:
             # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
             # projection and receives 0 gradient. It never shrinks during optimization.
@@ -421,6 +437,9 @@ class GESStrategy(Strategy):
                 is_too_big_2d = state["radii"] > self.prune_scale2d
                 is_prune = is_prune | is_too_big_2d
         num_prune = is_prune.sum().item()
+        if step >= 500:
+            with open("debug_strategy.txt", "a") as f:
+                f.write(f"num_prune: {num_prune} / {len(is_prune)}\n")
         if num_prune > 0:
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
 
