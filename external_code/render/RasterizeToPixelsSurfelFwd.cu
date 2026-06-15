@@ -386,7 +386,7 @@ __global__ void rasterize_to_pixels_surfel_fwd_kernel(
             if (sigma >= 0.f && exp_neg_sigma >= ALPHA_THRESHOLD) {
                 float val = 255.0f * opac * exp_neg_sigma;
                 if (val >= ALPHA_THRESHOLD) {
-                    alpha = min(1.0f, val);
+                    alpha = min(MAX_ALPHA, val);
                 }
             }
 

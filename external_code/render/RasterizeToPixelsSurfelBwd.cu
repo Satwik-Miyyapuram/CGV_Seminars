@@ -411,7 +411,7 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
                 if (sigma >= 0.f && vis >= ALPHA_THRESHOLD) {
                     float val = 255.0f * opac * vis;
                     if (val >= ALPHA_THRESHOLD) {
-                        alpha = min(1.0f, val);
+                        alpha = min(MAX_ALPHA, val);
                     }
                 }
 
