@@ -409,7 +409,10 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
                 vis = __expf(-sigma);
                 alpha = 0.0f;
                 if (sigma >= 0.f && vis >= ALPHA_THRESHOLD) {
-                    alpha = opac;
+                    float val = 255.0f * opac * vis;
+                    if (val >= ALPHA_THRESHOLD) {
+                        alpha = min(1.0f, val);
+                    }
                 }
 
                 // gaussian throw out
@@ -552,11 +555,65 @@ __global__ void rasterize_to_pixels_surfel_bwd_kernel(
                 }
 
                 /** ==================================================
-                 * Surfel backward pass: flat disk opacity gradients
+                 * Surfel backward pass: modulated opacity gradients
                  * ==================================================
                  */
-                if (alpha <= MAX_ALPHA) {
-                    v_opacity_local = v_alpha;
+                float val = 255.0f * opac * vis;
+                if (alpha <= MAX_ALPHA && val < 1.0f) {
+                    float v_depth = 0.f;
+                    // d(alpha) / d(G_i) = 255.0f * opac
+                    const float v_G = 255.0f * opac * v_alpha;
+
+                    // case 1: in the forward pass, the proper ray-primitive
+                    // intersection is used
+                    if (gauss_weight_3d <= gauss_weight_2d) {
+
+                        // derivative of G_i w.r.t. ray-primitive intersection
+                        // uv coordinates
+                        const vec2 v_s = {
+                            v_G * -vis * s.x + v_depth * w_M.x,
+                            v_G * -vis * s.y + v_depth * w_M.y
+                        };
+
+                        // backward through the projective transform
+                        const vec3 v_z_w_M = {s.x, s.y, 1.0};
+                        const float v_sx_pz = v_s.x / ray_cross.z;
+                        const float v_sy_pz = v_s.y / ray_cross.z;
+                        const vec3 v_ray_cross = {
+                            v_sx_pz, v_sy_pz, -(v_sx_pz * s.x + v_sy_pz * s.y)
+                        };
+                        const vec3 v_h_u = glm::cross(h_v, v_ray_cross);
+                        const vec3 v_h_v = glm::cross(v_ray_cross, h_u);
+
+                        // derivative of ray-primitive intersection uv
+                        // coordinates w.r.t. transformation (geometry)
+                        // coefficients
+                        v_u_M_local = {-v_h_u.x, -v_h_u.y, -v_h_u.z};
+                        v_v_M_local = {-v_h_v.x, -v_h_v.y, -v_h_v.z};
+                        v_w_M_local = {
+                            px * v_h_u.x + py * v_h_v.x + v_depth * v_z_w_M.x,
+                            px * v_h_u.y + py * v_h_v.y + v_depth * v_z_w_M.y,
+                            px * v_h_u.z + py * v_h_v.z + v_depth * v_z_w_M.z
+                        };
+
+                        // case 2: in the forward pass, the 2D gaussian
+                        // projected gaussian weight is used
+                    } else {
+                        // computing the derivative of G_i w.r.t. 2d projected
+                        // gaussian parameters (trivial)
+                        const float v_G_ddelx =
+                            -vis * FILTER_INV_SQUARE_2DGS * d.x;
+                        const float v_G_ddely =
+                            -vis * FILTER_INV_SQUARE_2DGS * d.y;
+                        v_xy_local = {v_G * v_G_ddelx, v_G * v_G_ddely};
+                        if (v_means2d_abs != nullptr) {
+                            v_xy_abs_local = {
+                                abs(v_xy_local.x), abs(v_xy_local.y)
+                            };
+                        }
+                    }
+                    // d(alpha) / d(opac) = 255.0f * vis
+                    v_opacity_local = 255.0f * vis * v_alpha;
                 }
 
 /**

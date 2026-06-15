@@ -27,11 +27,13 @@ from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
 from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
 from pytorch_msssim import SSIM
+
+# from surfel_rasterizer_extension.render import rasterize_surfels_to_pixels
+from render import rasterization_surfel
 from torch.nn import Parameter
 from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-# from surfel_rasterizer_extension.render import rasterize_surfels_to_pixels
-from render import rasterization_surfel
+
 from ges_strategy import GESStrategy
 from training_schedule import (
     CLAMP_18K_STEP,
@@ -498,9 +500,6 @@ class GESModel(Model):
                     )
                 self.strategy.freeze_surfel_geometry(self)
 
-        def pre_backward_callback(step: int):
-            self.strategy.step_pre_backward(self, step)
-
         def densification_post_backward_callback(step: int):
             self.strategy.step_post_backward(self, step)
 
@@ -621,13 +620,6 @@ class GESModel(Model):
                 except Exception as e:
                     print(f"Failed to save fixed view at step {step}: {e}")
 
-        # callbacks.append(
-        #     TrainingCallback(
-        #         where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-        #         update_every_num_iters=1,
-        #         func=pre_backward_callback,
-        #     )
-        # )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],

@@ -384,7 +384,10 @@ __global__ void rasterize_to_pixels_surfel_fwd_kernel(
             const float exp_neg_sigma = __expf(-sigma);
             float alpha = 0.0f;
             if (sigma >= 0.f && exp_neg_sigma >= ALPHA_THRESHOLD) {
-                alpha = opac;
+                float val = 255.0f * opac * exp_neg_sigma;
+                if (val >= ALPHA_THRESHOLD) {
+                    alpha = min(1.0f, val);
+                }
             }
 
             // ignore transparent gaussians
