@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include <ATen/core/Tensor.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <tuple>
 
 #include "Common.h"
