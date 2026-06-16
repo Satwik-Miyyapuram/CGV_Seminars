@@ -106,9 +106,9 @@ export class RayCompositingDiagram {
         ctx.setLineDash([]);
         ctx.restore();
 
-        ctx.fillStyle = "#666";
+        ctx.fillStyle = "#888";
         ctx.font = "9px monospace";
-        ctx.fillText("TOP-DOWN ORBIT VIEW", halfW - 55, 12);
+        ctx.fillText("INTERMEDIATE: Top-Down Orbit View", halfW - 80, 12);
 
         // 2. MIDDLE VIEW: Divider + Labels
         const midY = 115;
@@ -167,6 +167,11 @@ export class RayCompositingDiagram {
         all: any[]
     ) {
         const w = x1 - x0;
+
+        // Label Intermediate
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.font = "8px monospace";
+        ctx.fillText("INTERMEDIATE: Blending Curves", x0, baseY - curveH - 6);
 
         ctx.strokeStyle = "rgba(255,255,255,0.12)";
         ctx.lineWidth = 1;
@@ -254,6 +259,11 @@ export class RayCompositingDiagram {
             ctx.fillText(orderStr || "None", tx0 + tileW / 2, stripY - 4);
             ctx.textAlign = "left";
         }
+
+        // Label Output
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.font = "8px monospace";
+        ctx.fillText("OUTPUT: Rendered Pixels", x0, stripY + stripH + 12);
     }
 
     /**
@@ -267,6 +277,11 @@ export class RayCompositingDiagram {
         items: any[]
     ) {
         const w = x1 - x0;
+
+        // Label Intermediate
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.font = "8px monospace";
+        ctx.fillText("INTERMEDIATE: Blending Curves", x0, baseY - curveH - 6);
 
         ctx.strokeStyle = "rgba(255,255,255,0.12)";
         ctx.lineWidth = 1;
@@ -330,5 +345,10 @@ export class RayCompositingDiagram {
             ctx.fillStyle = `rgb(${fR * 255 | 0},${fG * 255 | 0},${fB * 255 | 0})`;
             ctx.fillRect(px, stripY, 2, stripH);
         }
+
+        // Label Output
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.font = "8px monospace";
+        ctx.fillText("OUTPUT: Rendered Pixels", x0, stripY + stripH + 12);
     }
 }

@@ -219,8 +219,8 @@ export class UIController {
                 btnComparison.classList.add('active');
                 viewerEl.style.display = 'none';
                 uiPanel.style.display = 'none';
-                comparisonContainer.style.display = 'grid';
-                
+                comparisonContainer.style.display = 'block';
+
                 // Dispatch layout resize event for comparison viewers
                 window.dispatchEvent(new Event('resize'));
             });

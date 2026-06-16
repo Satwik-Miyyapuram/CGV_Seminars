@@ -32,12 +32,29 @@ export class ComparisonManager {
 
         // Listen for standard resize event to trigger redraws
         window.addEventListener("resize", this.handleResize);
+
+        // The comparison tab starts hidden (display:none), so the canvases are first sized
+        // while their container has zero size. Watch the container so that when the tab is
+        // shown (or otherwise resized) every diagram re-measures and redraws at the correct
+        // size — otherwise the 2D diagrams would stay blank until a window resize.
+        const container = document.getElementById("comparison-container");
+        if (container && "ResizeObserver" in window) {
+            const ro = new ResizeObserver(() => {
+                if (container.clientWidth > 0) this.handleResize();
+            });
+            ro.observe(container);
+        }
     }
 
     /**
      * Propagate resize events to each sub-component so they redraw correctly.
      */
     public handleResize = () => {
+        // Skip while the comparison tab is hidden (zero size): some diagrams compute negative
+        // canvas dimensions at zero width and would throw.
+        const container = document.getElementById("comparison-container");
+        if (container && container.clientWidth === 0) return;
+
         this.rayDiagram.resize();
         this.rayDiagram.draw();
 

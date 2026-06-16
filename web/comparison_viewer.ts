@@ -1,12 +1,11 @@
-import { ComparisonManager } from "./components/comparison/ComparisonManager";
+import { ComparisonTab } from "./components/comparison/ComparisonTab";
 
-// Entry point for the Comparison tab, initializing the main manager on DOM load
+// Entry point for the redesigned Comparison tab (Tab B). ComparisonTab builds the tab's
+// markup and wires up all the diagrams/3D viewers via ComparisonManager.
 document.addEventListener("DOMContentLoaded", () => {
-    const comparisonManager = new ComparisonManager();
+    const tab = new ComparisonTab();
 
-    // Trigger an initial layout resize call shortly after loading to ensure all
-    // canvas dimensions align correctly (since container displays might change)
-    setTimeout(() => {
-        comparisonManager.handleResize();
-    }, 150);
+    // Trigger an initial layout pass shortly after load so every canvas measures correctly
+    // once the container has been laid out.
+    setTimeout(() => tab.handleResize(), 150);
 });

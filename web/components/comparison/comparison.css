@@ -1,0 +1,161 @@
+/* ============================================================================
+   Redesigned "Artifact Comparison" tab (Tab B).
+   A guided, visual, plain-English explainer of GES vs 3DGS.
+   Consistent colour code:  3DGS = red · GES = green · Surfel = cyan · Gaussian = magenta
+   ========================================================================== */
+
+:root {
+    --cmp-3dgs: var(--accent-red);
+    --cmp-ges: var(--accent-green);
+    --cmp-surfel: var(--accent-blue);
+    --cmp-gauss: #ff2e9a;
+}
+
+/* The container is toggled by the tab nav; the redesign manages its own layout. */
+.cmp-root {
+    max-width: 1480px;
+    margin: 0 auto;
+    font-family: 'Outfit', sans-serif;
+}
+
+/* ---- Header + legend ---------------------------------------------------- */
+.cmp-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px 24px;
+    margin-bottom: 22px;
+}
+.cmp-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 26px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #fff 0%, var(--accent-blue) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.cmp-sub { color: var(--text-muted); font-size: 13px; margin-top: 4px; }
+
+.cmp-legend { display: flex; gap: 16px; flex-wrap: wrap; }
+.legend-chip {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.legend-dot { width: 12px; height: 12px; border-radius: 4px; }
+
+/* ---- Two-pass intro schematic ------------------------------------------ */
+.flow {
+    display: flex; align-items: stretch; justify-content: center;
+    flex-wrap: wrap; gap: 6px 4px;
+}
+.flow-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.flow-k {
+    font-size: 9px; letter-spacing: 1px; font-weight: 700;
+    color: var(--text-muted); opacity: 0.7;
+}
+.flow-box {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--panel-border);
+    border-radius: 9px; padding: 9px 13px;
+    font-size: 12px; font-weight: 600; color: #fff;
+    text-align: center; white-space: nowrap;
+}
+.flow-box.surfel { border-color: rgba(0, 210, 255, 0.45); background: rgba(0, 210, 255, 0.06); }
+.flow-box.gauss  { border-color: rgba(255, 46, 154, 0.45); background: rgba(255, 46, 154, 0.06); }
+.flow-box.out    { border-color: rgba(0, 255, 135, 0.55); background: rgba(0, 255, 135, 0.09); }
+.flow-arrow {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--text-muted); font-size: 18px; padding: 0 2px;
+}
+.flow-op { font-size: 9px; line-height: 1.2; opacity: 0.72; text-align: center; max-width: 88px; }
+.dim { opacity: 0.6; font-style: italic; }
+
+/* ---- 2-column layout (kept) -------------------------------------------- */
+.cmp-grid {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 26px;
+    align-items: start;
+}
+.cmp-col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.cmp-col-right { position: sticky; top: 86px; }
+@media (max-width: 1100px) {
+    .cmp-grid { grid-template-columns: 1fr; }
+    .cmp-col-right { position: static; }
+}
+
+/* ---- Card v2 ----------------------------------------------------------- */
+.ccard {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    padding: 20px 22px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+.ccard.intro { margin-bottom: 24px; }
+.ccard-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.ccard-num {
+    flex: none; width: 30px; height: 30px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; color: #fff;
+    background: linear-gradient(135deg, var(--accent-blue) 0%, #0072ff 100%);
+}
+.ccard-num.live { background: linear-gradient(135deg, var(--cmp-ges) 0%, #00b894 100%); font-size: 12px; }
+.ccard-title { font-family: 'Space Grotesk', sans-serif; font-size: 17px; font-weight: 600; color: #fff; margin: 0; }
+.ccard-take { font-size: 13.5px; line-height: 1.5; color: var(--text-main); margin: 0 0 14px; }
+.ccard-take b { color: #fff; font-weight: 700; }
+.ccard-take .red { color: var(--cmp-3dgs); font-weight: 700; }
+.ccard-take .green { color: var(--cmp-ges); font-weight: 700; }
+
+/* ---- "What's showing what" labels around each visual ------------------- */
+.viz-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    font-size: 11px; color: var(--text-muted); margin: 4px 0 10px;
+}
+.viz-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 20px;
+    background: rgba(255, 255, 255, 0.04); border: 1px solid var(--panel-border);
+    font-weight: 600; color: var(--text-main);
+}
+.viz-tag .k { font-size: 8.5px; letter-spacing: 0.6px; opacity: 0.65; text-transform: uppercase; }
+.viz-tag.t-in  { border-color: rgba(255,255,255,0.18); }
+.viz-tag.t-mid { border-color: rgba(0,210,255,0.35); }
+.viz-tag.t-out { border-color: rgba(0,255,135,0.35); }
+.viz-arrow { color: var(--text-muted); opacity: 0.55; }
+
+.viz-caption { font-size: 11.5px; color: var(--text-muted); margin-top: 9px; line-height: 1.5; }
+.viz-caption .red { color: var(--cmp-3dgs); font-weight: 700; }
+.viz-caption .green { color: var(--cmp-ges); font-weight: 700; }
+
+/* ---- Collapsible math -------------------------------------------------- */
+details.math { margin-top: 12px; border-top: 1px solid var(--panel-border); padding-top: 9px; }
+details.math > summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--accent-blue);
+    list-style: none; user-select: none;
+}
+details.math > summary::-webkit-details-marker { display: none; }
+details.math > summary::before { content: '▸  '; }
+details.math[open] > summary::before { content: '▾  '; }
+.math-body { font-size: 13px; color: var(--text-muted); margin-top: 10px; line-height: 1.7; }
+.math-body .row { margin: 6px 0; }
+.math-body .lbl { display: inline-block; min-width: 64px; font-weight: 700; }
+.math-body .lbl.red { color: var(--cmp-3dgs); }
+.math-body .lbl.green { color: var(--cmp-ges); }
+
+/* ---- Control rows (reuse range styling from style.css) ------------------ */
+.ccard .control-group { margin: 6px 0 4px; }
+.ccard .status-box {
+    font-size: 12.5px; line-height: 1.45; margin: 8px 0 4px;
+    padding: 8px 10px; border-radius: 8px; border-left: 3px solid var(--cmp-3dgs);
+    background: rgba(255, 74, 90, 0.08);
+}
+
+/* Per-visual canvas heights */
+#ray-canvas { height: 250px; }
+#tile-canvas { height: 380px; }
+#leaking-canvas { height: 190px; }
+#reflection-container { height: 240px; }

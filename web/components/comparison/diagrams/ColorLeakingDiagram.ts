@@ -74,6 +74,11 @@ export class ColorLeakingDiagram {
         const w = x1 - x0;
         const midY = H / 2 + 10;
 
+        // Label Intermediate
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.font = "8px monospace";
+        ctx.fillText("INTERMEDIATE: Setup", x0, 34);
+
         // Visual representations: Cyan Surfel (in front) and Red Gaussian (behind)
         const surfel = { cx: x0 + w / 2 - 8, cy: midY, r: 38, rgb: [0.0, 0.82, 1.0] as [number, number, number], depth: 2.0, opacity: 0.95 };
         const gauss  = { cx: x0 + w / 2 + 8, cy: midY, rgb: [1.0, 0.29, 0.35] as [number, number, number], depth: 2.5, opacity: 0.90, sigma: 28 };
@@ -127,6 +132,11 @@ export class ColorLeakingDiagram {
         tmp.height = imgH;
         tmp.getContext("2d")!.putImageData(imgData, 0, 0);
         ctx.drawImage(tmp, x0, midY - 32);
+
+        // Label Output overlaid on the rendered pixels
+        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.font = "8px monospace";
+        ctx.fillText("OUTPUT: Rendered Pixels", x0 + 5, midY - 20);
 
         // Render annotations
         ctx.fillStyle = "#888";

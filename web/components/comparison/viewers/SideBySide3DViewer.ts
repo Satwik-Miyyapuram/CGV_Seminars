@@ -168,6 +168,15 @@ export class SideBySide3DViewer {
             const size = isSurfel ? 1.5 : 1.3;
             const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
             mesh.position.set(s.meshPos[0], s.meshPos[1], s.meshPos[2]);
+
+            if (isSurfel) {
+                // Rotate the surfel 90° about Y so its plane normal points along +X.
+                // The Gaussians are spread along the X axis, so the surfel now stands as a
+                // YZ-plane divider with the other splats on either side of it — clarifying the
+                // two-pass depth test (Gaussians behind the opaque surfel are culled).
+                mesh.rotation.y = Math.PI / 2;
+            }
+
             scene.add(mesh);
 
             if (isGES) {
@@ -206,6 +215,21 @@ export class SideBySide3DViewer {
         }
     }
 
+    // Reusable temporary for view-space depth computation (avoids per-frame allocation).
+    private _tmpVec = new THREE.Vector3();
+
+    /**
+     * View-space depth of a mesh's center: z in camera space, returned as a positive
+     * distance in front of the camera (larger = further). This is the key three.js uses
+     * to order transparent objects, and matches the paper's depth (view z) for depth tests.
+     */
+    private viewDepth(camera: THREE.PerspectiveCamera, mesh: THREE.Mesh): number {
+        camera.updateMatrixWorld();
+        mesh.getWorldPosition(this._tmpVec);
+        this._tmpVec.applyMatrix4(camera.matrixWorldInverse);
+        return -this._tmpVec.z;
+    }
+
     /**
      * Rendering loop.
      */
@@ -225,25 +249,28 @@ export class SideBySide3DViewer {
             this.controls3dgs.target.copy(this.controlsGes.target);
         }
 
-        // 3DGS side: Render sorting order distance debug output
+        // 3DGS side: Render sorting order debug output.
+        // Use VIEW-SPACE depth (z in camera space), which is exactly what three.js uses to
+        // sort transparent meshes — Euclidean distance can disagree at oblique angles.
         if (this.meshes3dgs.length > 0) {
             const dists = this.meshes3dgs.map(m => ({
                 name: m.splat.name,
-                d: this.camera3dgs.position.distanceTo(m.mesh.position)
+                d: this.viewDepth(this.camera3dgs, m.mesh)
             }));
             dists.sort((a, b) => a.d - b.d);
             const el = document.getElementById("debug-3dgs");
             if (el) {
-                el.innerHTML = dists.map(x => `${x.name}: ${x.d.toFixed(2)}`).join("<br>") + 
+                el.innerHTML = dists.map(x => `${x.name}: ${x.d.toFixed(2)}`).join("<br>") +
                                `<br>Order: ${dists.map(x => x.name).join(" → ")}`;
             }
         }
 
-        // GES side: Render depth testing culling check (cull if d_i > d_s + delta)
+        // GES side: Render depth testing culling check (cull if d_i > d_s + delta).
+        // View-space depth matches the paper's use of depth (view z) for the depth test.
         if (this.meshesGes.length > 0) {
             const surfelMesh = this.meshesGes.find(m => m.splat.isSurfel)?.mesh;
             if (surfelMesh) {
-                const dS = this.cameraGes.position.distanceTo(surfelMesh.position);
+                const dS = this.viewDepth(this.cameraGes, surfelMesh);
                 const deltaEl = document.getElementById("compDeltaSlider") as HTMLInputElement;
                 const delta = deltaEl ? parseFloat(deltaEl.value) : 0.5;
 
@@ -251,7 +278,7 @@ export class SideBySide3DViewer {
 
                 this.meshesGes.forEach(m => {
                     if (!m.splat.isSurfel) {
-                        const dG = this.cameraGes.position.distanceTo(m.mesh.position);
+                        const dG = this.viewDepth(this.cameraGes, m.mesh);
                         const cull = dG > dS + delta;
                         m.mesh.visible = !cull;
                         debugLines.push(`${m.splat.name}: ${dG.toFixed(2)} ${cull ? "❌" : "✅"}`);

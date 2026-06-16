@@ -99,81 +99,8 @@
         </label>
     </div>
 
-    <!-- Comparison Tab UI -->
-    <div id="comparison-container">
-        <div class="comparison-left">
-            <div class="card" id="card-ray">
-                <h3>Panel A: Tile Sorting &amp; Popping</h3>
-                <div class="card-desc">
-                    <strong>3DGS (Tile-Based α-Blending):</strong> $C = \sum_{i=1}^{N} c_i \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j)$ — order-dependent! <br>
-                    <strong>GES (Additive + Normalize):</strong> $C = \frac{\sum_{i} c_i \alpha_i}{\sum_{i} \alpha_i}$ — order-independent (sum is commutative). <br>
-                    Drag the camera angle slider. 3DGS divides the image into tiles and sorts splats independently per tile. If a splat's radius stops intersecting a tile, it is culled, causing the tile's set of splats (and thus sort order) to change instantly—creating a harsh seam! GES uses additive blending, which perfectly preserves continuity.
-                </div>
-                <div class="control-group">
-                    <label for="orderSlider">Camera Angle / Ray Projection <span class="slider-label-val" id="orderValue">0°</span></label>
-                    <input type="range" id="orderSlider" min="-45" max="45" step="1" value="0">
-                </div>
-                <canvas class="diagram-canvas" id="ray-canvas" style="height: 250px;"></canvas>
-            </div>
-
-            <div class="card" id="card-tile">
-                <h3>Panel B: Tile-Based Sorting</h3>
-                <div class="card-desc">
-                    3DGS divides the screen into 16×16 pixel tiles and sorts Gaussians <strong>independently per tile</strong>. When two Gaussians overlap across a tile boundary, adjacent tiles may sort them in different orders, producing a visible seam. GES uses additive blending ($\sum c_i \alpha_i$) which is commutative — order doesn't matter, so no seams.
-                </div>
-                <canvas class="diagram-canvas" id="tile-canvas" style="height: 220px;"></canvas>
-            </div>
-
-            <div class="card" id="card-leaking">
-                <h3>Panel C: Color Leaking &amp; Depth Culling</h3>
-                <div class="card-desc">
-                    <strong>SortFreeGS:</strong> $C = \frac{\sum_{i} c_i \alpha_i}{\sum_{i} \alpha_i + \epsilon}$ (Always leaks) <br>
-                    <strong>GES:</strong> $C_{GES} = \frac{W_S C_S + \sum_{i} \mathbb{1}(d_i &lt; D_S + \delta) c_i \alpha_i}{W_S + \sum_{i} \mathbb{1}(d_i &lt; D_S + \delta) \alpha_i + \epsilon}$ <br>
-                    When a bright Gaussian is behind a solid opaque surfel (depth $D_S$), SortFreeGS blends them anyway, leaking color. GES introduces the indicator function $\mathbb{1}$ to explicitly cull fragments when $d_i > D_S + \delta$.
-                </div>
-                <div class="control-group">
-                    <label for="compDeltaSlider">Depth Test Offset ($\delta$) <span class="slider-label-val" id="compDeltaValue">0.5</span></label>
-                    <input type="range" id="compDeltaSlider" min="0.0" max="1.5" step="0.05" value="0.5">
-                </div>
-                <canvas class="diagram-canvas" id="leaking-canvas"></canvas>
-            </div>
-
-            <div class="card" id="card-reflection">
-                <h3>Panel D: Specular Reflection (Limitation)</h3>
-                <div class="card-desc">
-                    <strong>3DGS:</strong> Models reflections by placing "fake" floaters physically below the surface. Since 3DGS uses pure $\alpha$-blending, the camera sees through the surface to the underground floaters, successfully faking a mirror reflection.<br>
-                    <strong>GES:</strong> Represents the surface with an opaque surfel ($D_S$), which aggressively culls anything underground. Therefore, GES cannot place floaters underground; instead, it places Gaussians <em>just above</em> the surfel to imitate reflection via view-dependent color.
-                </div>
-                <div class="sbs-viewport-container" id="reflection-container" style="height: 250px; margin: 0; display: block; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); background: #0d0c14; position: relative;">
-                    <div style="position: absolute; left: 10px; top: 10px; color: var(--accent-red); font-size: 11px; font-weight: bold; background: rgba(0,0,0,0.5); padding: 4px; border-radius: 4px; z-index: 10;">3DGS (Alpha Blending)</div>
-                    <div style="position: absolute; right: 10px; top: 10px; color: var(--accent-green); font-size: 11px; font-weight: bold; background: rgba(0,0,0,0.5); padding: 4px; border-radius: 4px; z-index: 10;">GES (Surfel + Depth Test)</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="comparison-right">
-            <div class="card" style="height: 100%; display: flex; flex-direction: column;">
-                <h3>3D Interactive Side-by-Side</h3>
-                <div class="card-desc" style="margin-bottom: 8px;">
-                    Move the camera below to interact with a live 3D side-by-side representation of 3DGS vs. GES. Check out the tile sorting seams and depth test behaviors.
-                </div>
-                <div class="sbs-viewport-container">
-                    <div class="sbs-viewport" id="viewport-3dgs">
-                        <div class="viewport-label" style="color: var(--accent-red); border-color: var(--accent-red);">3DGS (Alpha Blending)</div>
-                        <div id="debug-3dgs" style="position: absolute; bottom: 10px; left: 10px; font-family: monospace; font-size: 10px; color: #fff; background: rgba(0,0,0,0.8); padding: 4px; border-radius: 4px; z-index: 2; pointer-events: none;"></div>
-                    </div>
-                    <div class="sbs-viewport" id="viewport-ges">
-                        <div class="viewport-label" style="color: var(--accent-green); border-color: var(--accent-green);">GES (Two-Pass Depth Tested)</div>
-                        <div id="debug-ges" style="position: absolute; bottom: 10px; left: 10px; font-family: monospace; font-size: 10px; color: #fff; background: rgba(0,0,0,0.8); padding: 4px; border-radius: 4px; z-index: 2; pointer-events: none;">GES Order-Independent</div>
-                    </div>
-                </div>
-                <div class="card-desc" style="font-size: 12px;">
-                    <strong>How to learn from this 3D demo:</strong> <br>
-                    Orbit the camera around the splats! 3DGS sorts transparent fragments based on the distance from their centers to the camera. As you orbit, watch the debug text above: when the camera crosses the threshold where the <strong>Blue</strong> splat becomes further away than the <strong>Red</strong> splat, Three.js swaps their render order. Because 3DGS relies on standard Alpha Blending, swapping the order drastically changes the blended color (popping). GES writes the Blue surfel to the explicit depth-buffer, so it perfectly occludes the Gaussians regardless of what order they are drawn!
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- Comparison Tab UI — built by ComparisonTab.ts (see web/components/comparison) -->
+    <div id="comparison-container"></div>
 
     <script type="module" src="./ges_viewer.ts"></script>
     <script type="module" src="./comparison_viewer.ts"></script>
