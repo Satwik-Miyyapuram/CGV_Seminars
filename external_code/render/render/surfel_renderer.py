@@ -356,15 +356,15 @@ def rasterization_surfel(
     depth_mode: Literal["expected", "median"] = "expected",
 ) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor], Tensor, Tensor, Dict]:
     """High-level Python wrapper for surfel rasterization, matching `rasterization_2dgs`."""
-    print(f"\n[SURFEL-RENDER-DEBUG] rasterization_surfel inputs:", flush=True)
-    print(f"  means.requires_grad: {means.requires_grad}", flush=True)
-    print(f"  quats.requires_grad: {quats.requires_grad}", flush=True)
-    print(f"  scales.requires_grad: {scales.requires_grad}", flush=True)
-    print(f"  opacities.requires_grad: {opacities.requires_grad}", flush=True)
-    print(f"  colors.requires_grad: {colors.requires_grad}", flush=True)
-    print(f"  viewmats.requires_grad: {viewmats.requires_grad}", flush=True)
-    print(f"  Ks.requires_grad: {Ks.requires_grad}", flush=True)
-    print(f"  torch.is_grad_enabled(): {torch.is_grad_enabled()}", flush=True)
+    # print(f"\n[SURFEL-RENDER-DEBUG] rasterization_surfel inputs:", flush=True)
+    # print(f"  means.requires_grad: {means.requires_grad}", flush=True)
+    # print(f"  quats.requires_grad: {quats.requires_grad}", flush=True)
+    # print(f"  scales.requires_grad: {scales.requires_grad}", flush=True)
+    # print(f"  opacities.requires_grad: {opacities.requires_grad}", flush=True)
+    # print(f"  colors.requires_grad: {colors.requires_grad}", flush=True)
+    # print(f"  viewmats.requires_grad: {viewmats.requires_grad}", flush=True)
+    # print(f"  Ks.requires_grad: {Ks.requires_grad}", flush=True)
+    # print(f"  torch.is_grad_enabled(): {torch.is_grad_enabled()}", flush=True)
     batch_dims = means.shape[:-2]
     num_batch_dims = len(batch_dims)
     B = math.prod(batch_dims)
@@ -498,13 +498,13 @@ def rasterization_surfel(
         colors = depths[..., None]
 
     # Call custom autograd function wrapper
-    print(f"\n[SURFEL-RENDER-DEBUG] Calling rasterize_to_pixels_surfel with:", flush=True)
-    print(f"  means2d.requires_grad: {means2d.requires_grad}", flush=True)
-    print(f"  ray_transforms.requires_grad: {ray_transforms.requires_grad}", flush=True)
-    print(f"  colors.requires_grad: {colors.requires_grad}", flush=True)
-    print(f"  opacities.requires_grad: {opacities.requires_grad}", flush=True)
-    print(f"  normals.requires_grad: {normals.requires_grad}", flush=True)
-    print(f"  densify.requires_grad: {densify.requires_grad}", flush=True)
+    # print(f"\n[SURFEL-RENDER-DEBUG] Calling rasterize_to_pixels_surfel with:", flush=True)
+    # print(f"  means2d.requires_grad: {means2d.requires_grad}", flush=True)
+    # print(f"  ray_transforms.requires_grad: {ray_transforms.requires_grad}", flush=True)
+    # print(f"  colors.requires_grad: {colors.requires_grad}", flush=True)
+    # print(f"  opacities.requires_grad: {opacities.requires_grad}", flush=True)
+    # print(f"  normals.requires_grad: {normals.requires_grad}", flush=True)
+    # print(f"  densify.requires_grad: {densify.requires_grad}", flush=True)
     (
         render_colors,
         render_alphas,
