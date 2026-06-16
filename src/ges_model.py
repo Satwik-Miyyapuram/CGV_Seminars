@@ -100,7 +100,7 @@ class Surfel(torch.nn.Module):
     def from_means(cls, means: Parameter, sh_degree: int):
         distances, _ = k_nearest_sklearn(means.data, 3)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
+        avg_dist = distances.mean(dim=-1, keepdim=True).clamp(min=1e-7)
         scales = Parameter(torch.log(avg_dist.repeat(1, 3)))
         num_points = means.shape[0]
         quats = Parameter(random_quat_tensor(num_points))
@@ -972,10 +972,17 @@ class GESModel(Model):
             opacities = torch.sigmoid(culled_opacities.squeeze(-1))
             # BUG 4 FIX: Pass absgrad=True for Gaussian rasterization too,
             # so that Gaussian densification (after 20k) uses absolute gradients.
+            # Guard against NaN scales (can arise from log(0) in KNN init)
+            gaussian_scales = gaussian_crop.scales
+            if torch.isnan(gaussian_scales).any():
+                if self.training and self.step % 1000 == 0:
+                    num_nan = torch.isnan(gaussian_scales).any(dim=1).sum().item()
+                    print(f"[WARNING] {num_nan}/{gaussian_scales.shape[0]} Gaussians have NaN scales! Replacing with 0.")
+                gaussian_scales = torch.nan_to_num(gaussian_scales, nan=0.0)
             gaussian_render, gaussian_alpha, gaussian_info = rasterization(
                 means=gaussian_crop.means,
                 quats=gaussian_crop.quats,
-                scales=torch.exp(gaussian_crop.scales),
+                scales=torch.exp(gaussian_scales),
                 opacities=opacities,
                 colors=gaussian_color_crop,
                 viewmats=viewmat,
