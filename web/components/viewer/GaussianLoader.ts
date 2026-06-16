@@ -9,11 +9,13 @@ import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
  * 2. Configure additive blending (Pass 2) to accumulate colors and opacities.
  */
 export class GaussianLoader {
+    private sceneManager: any;
     private scene: THREE.Scene;
     public viewer: any | null = null;
 
-    constructor(scene: THREE.Scene) {
-        this.scene = scene;
+    constructor(sceneManager: any) {
+        this.sceneManager = sceneManager;
+        this.scene = sceneManager.scene;
     }
 
     /**
@@ -38,6 +40,7 @@ export class GaussianLoader {
         this.configureMaterial();
         this.viewer.renderOrder = 1; // Gaussians render after Surfels (Pass 2)
         this.scene.add(this.viewer);
+        this.sceneManager.gaussianViewer = this.viewer;
 
         console.log("[GaussianLoader] Gaussians loaded and configured.");
     }
@@ -49,6 +52,7 @@ export class GaussianLoader {
         if (this.viewer) {
             this.scene.remove(this.viewer);
             this.viewer = null;
+            this.sceneManager.gaussianViewer = null;
         }
     }
 

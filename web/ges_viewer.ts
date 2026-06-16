@@ -15,8 +15,8 @@ async function main() {
         const sceneManager = new SceneManager("viewer");
 
         // 2. Initialize loaders for Surfels and Gaussians
-        const surfelLoader = new SurfelLoader(sceneManager.scene);
-        const gaussianLoader = new GaussianLoader(sceneManager.scene);
+        const surfelLoader = new SurfelLoader(sceneManager);
+        const gaussianLoader = new GaussianLoader(sceneManager);
 
         // 3. Initialize UIController to bind sliders, checkboxes and file inputs
         const uiController = new UIController(sceneManager, surfelLoader, gaussianLoader);

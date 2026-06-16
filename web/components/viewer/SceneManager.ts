@@ -13,6 +13,10 @@ export class SceneManager {
     public renderer: THREE.WebGLRenderer;
     public controls: OrbitControls;
     public renderTarget: THREE.WebGLRenderTarget;
+    
+    // References to viewers for multi-pass rendering
+    public surfelViewer: any | null = null;
+    public gaussianViewer: any | null = null;
 
     // Compositing objects (Two-pass composite)
     private compositeScene: THREE.Scene;
@@ -147,12 +151,58 @@ export class SceneManager {
         
         this.controls.update();
 
-        // Pass 1 & 2: Render scene (surfels and gaussians) into the Half Float render target
+        // Render scene into the Half Float render target
         this.renderer.setRenderTarget(this.renderTarget);
         this.renderer.clear();
-        this.renderer.render(this.scene, this.camera);
 
-        // Pass 3: Composite final screen image (normalize and blend with background)
+        const surfel = this.surfelViewer;
+        const gaussian = this.gaussianViewer;
+
+        const surfelVisible = surfel ? surfel.visible : false;
+        const gaussianVisible = gaussian ? gaussian.visible : false;
+
+        // Pass 1: Render Surfels (Color only)
+        if (surfel && surfelVisible) {
+            const material = surfel.viewer?.splatMesh?.material;
+            if (material) {
+                // Ensure Gaussians are temporarily hidden during surfel color pass
+                if (gaussian) gaussian.visible = false;
+                surfel.visible = true;
+
+                // Disable depth writing during color pass so edges blend correctly
+                material.depthWrite = false;
+                material.colorWrite = true;
+                this.renderer.render(this.scene, this.camera);
+
+                // Pass 2: Render Surfels (Depth only)
+                // Write depth values of the sorted surfels to the depth buffer for Gaussian culling
+                if (gaussian && gaussianVisible) {
+                    material.depthWrite = true;
+                    material.colorWrite = false;
+                    this.renderer.render(this.scene, this.camera);
+                }
+
+                // Reset material properties back to defaults
+                material.depthWrite = false;
+                material.colorWrite = true;
+            } else {
+                if (gaussian) gaussian.visible = false;
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Pass 3: Render Gaussians (tested against Pass 2 depth buffer)
+        if (gaussian && gaussianVisible) {
+            if (surfel) surfel.visible = false;
+            gaussian.visible = true;
+            this.renderer.render(this.scene, this.camera);
+        }
+
+        // Restore original visibilities for loop/UI consistency
+        if (surfel) surfel.visible = surfelVisible;
+        if (gaussian) gaussian.visible = gaussianVisible;
+
+        // Composite final screen image (normalize and blend with background)
         this.renderer.setRenderTarget(null);
         this.renderer.render(this.compositeScene, this.compositeCamera);
     };

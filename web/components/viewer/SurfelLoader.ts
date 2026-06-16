@@ -9,21 +9,19 @@ import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
  * 3. Premultiplied alpha output for correct subsequent blending
  */
 export class SurfelLoader {
+    private sceneManager: any;
     private scene: THREE.Scene;
     public viewer: any | null = null;
     
     // Shader uniforms exposed for dynamic updates
     private uniforms: {
-        uUseBiScale: { value: number };
-        uOpacityCap: { value: number };
         uDiscardThreshold: { value: number };
     };
 
-    constructor(scene: THREE.Scene) {
-        this.scene = scene;
+    constructor(sceneManager: any) {
+        this.sceneManager = sceneManager;
+        this.scene = sceneManager.scene;
         this.uniforms = {
-            uUseBiScale: { value: 1.0 },       // Enabled by default
-            uOpacityCap: { value: 1.0 },       // Fully opaque cap by default
             uDiscardThreshold: { value: 0.002 } // Low opacity discard threshold
         };
     }
@@ -51,6 +49,7 @@ export class SurfelLoader {
         this.configureMaterial(initialDelta);
         this.viewer.renderOrder = 0; // Surfels render first (Pass 1)
         this.scene.add(this.viewer);
+        this.sceneManager.surfelViewer = this.viewer;
         
         console.log("[SurfelLoader] Surfels loaded and configured.");
     }
@@ -62,6 +61,7 @@ export class SurfelLoader {
         if (this.viewer) {
             this.scene.remove(this.viewer);
             this.viewer = null;
+            this.sceneManager.surfelViewer = null;
         }
     }
 
@@ -73,8 +73,8 @@ export class SurfelLoader {
 
         const material = this.viewer.viewer.splatMesh.material;
         
-        // Enable writing to the depth buffer for subsequent culling of Gaussians
-        material.depthWrite = true;
+        // Disable depth writing during standard color pass; SceneManager handles depth-pass separately
+        material.depthWrite = false;
         material.depthTest = true;
         
         // Low alpha test so we don't cull early. We handle discarding in the fragment shader.
@@ -96,8 +96,6 @@ export class SurfelLoader {
         // Shader modification hooks
         material.onBeforeCompile = (shader: THREE.Shader) => {
             // Bind our local control uniforms to the shader
-            shader.uniforms.uUseBiScale = this.uniforms.uUseBiScale;
-            shader.uniforms.uOpacityCap = this.uniforms.uOpacityCap;
             shader.uniforms.uDiscardThreshold = this.uniforms.uDiscardThreshold;
 
             // 1. Declare ndcDepth varying in the vertex shader to pass projection depth
@@ -122,26 +120,16 @@ export class SurfelLoader {
                 /varying\s+vec2\s+vPosition\s*;/g,
                 `varying vec2 vPosition;
                 varying float ndcDepth;
-                uniform float uUseBiScale;
-                uniform float uOpacityCap;
                 uniform float uDiscardThreshold;`
             );
             
-            // 4. Implement GES Bi-scale Disc Opacity (Eq. 6-7) vs standard Gaussian opacity
+            // 4. Implement flat circular disc opacity for surfels (constant opacity inside 3.33-sigma boundary)
             shader.fragmentShader = shader.fragmentShader.replace(
                 /float\s+opacity\s*=\s*exp\(\s*-0\.5\s*\*\s*A\s*\)\s*\*\s*vColor\.a\s*;/g,
                 `float g = exp(-0.5 * A);
-                float opacity;
-                if (uUseBiScale > 0.5) {
-                    // Paper Eq. 6-7: α_i = min(τ_i, w_i · G(x))
-                    // vColor.a is trained opacity logit, uOpacityCap represents τ_i
-                    opacity = min(uOpacityCap, vColor.a * g);
-                    if (opacity < uDiscardThreshold || g < 1.0 / 255.0) discard;
-                } else {
-                    // Standard Gaussian opacity: o_i * G(x)
-                    opacity = vColor.a * g;
-                    if (opacity < uDiscardThreshold || g < 1.0 / 255.0) discard;
-                }`
+                if (g < 1.0 / 255.0) discard;
+                float opacity = vColor.a;
+                if (opacity < uDiscardThreshold) discard;`
             );
 
             // 5. Output premultiplied color and write the correct 3D depth to gl_FragDepth
@@ -168,14 +156,14 @@ export class SurfelLoader {
      * Toggle between GES Bi-scale Disc Opacity and standard Gaussian Opacity.
      */
     public setUseBiScale(enabled: boolean) {
-        this.uniforms.uUseBiScale.value = enabled ? 1.0 : 0.0;
+        // No-op: we sort and render surfels with their correct opacity and write depth.
     }
 
     /**
      * Update the opacity capping threshold (tau).
      */
     public setOpacityCap(value: number) {
-        this.uniforms.uOpacityCap.value = value;
+        // No-op: we do not use the opacity cap.
     }
 
     /**
