@@ -108,7 +108,7 @@ class Surfel(torch.nn.Module):
         dim_sh = num_sh_bases(sh_degree)
         features_dc = Parameter(torch.zeros((num_points, 3)))
         features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3)))  # For future use
-        opacities = Parameter(torch.logit(0.01 * torch.ones((num_points, 1))))
+        opacities = Parameter(torch.logit((0.01 / 255.0) * torch.ones((num_points, 1))))
         return cls(means, quats, scales, opacities, features_dc, features_rest)
 
 

@@ -32,7 +32,7 @@ class GESStrategy(Strategy):
     and produces significantly better densification decisions.
     """
 
-    prune_opa: float = 0.01
+    prune_opa: float = 0.005 / 255.0
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
@@ -269,7 +269,7 @@ class GESStrategy(Strategy):
         if is_reset_step and not is_surfel_solidification_buffer:
             # BUG 14 FIX: Re-enabled opacity reset for surfel phase (3k, 6k).
             # We use 0.01 as the reset value, matching the paper's default.
-            reset_opa(params=params, optimizers=optimizers, state=state, value=0.01)
+            reset_opa(params=params, optimizers=optimizers, state=state, value=0.01 / 255.0)
             mutated = True
 
         if mutated:
