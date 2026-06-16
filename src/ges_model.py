@@ -754,14 +754,20 @@ class GESModel(Model):
 
         if self.training:
             assert camera.shape[0] == 1, "Only one camera at a time"
-            if self.step % 50 == 0:
-                if self.surfel.means.shape[0] > 0:
-                    sig_ops = torch.sigmoid(self.surfel.opacities.detach())
-                    print(
-                        f"[TRAIN DEBUG] Step {self.step}: {self.surfel.means.shape[0]} Surfels. "
-                        f"Opacities: min={sig_ops.min().item():.6f}, max={sig_ops.max().item():.6f}, mean={sig_ops.mean().item():.6f}",
-                        flush=True,
-                    )
+            # if self.step % 500 == 0:
+            #     if self.surfel.means.shape[0] > 0:
+            #         sig_ops = torch.sigmoid(self.surfel.opacities.detach())
+            #         print(
+            #             f"[TRAIN DEBUG] Step {self.step}: {self.surfel.means.shape[0]} Surfels. "
+            #             f"Opacities: min={sig_ops.min().item():.6f}, max={sig_ops.max().item():.6f}, mean={sig_ops.mean().item():.6f}"
+            #             f"Features_dc: min={self.surfel.features_dc.min().item():.6f}, max={self.surfel.features_dc.max().item():.6f}, mean={self.surfel.features_dc.mean().item():.6f}"
+            #             f"Features_rest: min={self.surfel.features_rest.min().item():.6f}, max={self.surfel.features_rest.max().item():.6f}, mean={self.surfel.features_rest.mean().item():.6f}"
+            #             f"Scales: min={self.surfel.scales.min().item():.6f}, max={self.surfel.scales.max().item():.6f}, mean={self.surfel.scales.mean().item():.6f}"
+            #             f"Quats: min={self.surfel.quats.min().item():.6f}, max={self.surfel.quats.max().item():.6f}, mean={self.surfel.quats.mean().item():.6f}"
+            #             f"Means: min={self.surfel.means.min().item():.6f}, max={self.surfel.means.max().item():.6f}, mean={self.surfel.means.mean().item():.6f}"
+            #             ,
+            #             flush=True
+            #         )
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
             # Save the first training camera to render progress from a fixed view
             if not hasattr(self, "fixed_camera"):
