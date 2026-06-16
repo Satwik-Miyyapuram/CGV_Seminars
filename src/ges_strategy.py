@@ -32,7 +32,7 @@ class GESStrategy(Strategy):
     and produces significantly better densification decisions.
     """
 
-    prune_opa: float = 0.005 / 255.0
+    prune_opa: float = 0.02 / 255.0
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
@@ -160,7 +160,12 @@ class GESStrategy(Strategy):
             state["count"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
         if state["radii"] is None:
             state["radii"] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
-
+        for key in ["grad2d", "count", "radii"]:
+            if state[key] is None or state[key].shape[0] < n_items:
+                old_tensor = state[key]
+                state[key] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
+                if old_tensor is not None:
+                    state[key][: old_tensor.shape[0]] = old_tensor
         # For 2DGS (surfel) rasterization, radii shape is [C, N, 2] (two axis-
         # aligned bounding-box radii). For standard 3DGS, it's [C, N].
         # We need to collapse the radius dimension(s) to [C, N].
@@ -875,12 +880,12 @@ class GESStrategy(Strategy):
         quats[:, 0] = 1.0
 
         new_data = {
-            "means": spawn_pts.clone(),
-            "quats": quats,
-            "scales": scales,
+            "means": spawn_pts.clone().to(device),
+            "quats": quats.to(device),
+            "scales": scales.to(device),
             "opacities": torch.logit(0.1 * torch.ones((num_new_gaussians, 1), device=device)),
-            "features_dc": features_dc,
-            "features_rest": features_rest,
+            "features_dc": features_dc.to(device),
+            "features_rest": features_rest.to(device),
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:

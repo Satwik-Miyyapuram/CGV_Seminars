@@ -44,6 +44,12 @@ def main():
         "--max-num-iterations", type=int, default=30000, help="Max number of iterations"
     )
     parser.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help="Whether to train from scratch without loading any checkpoints (overrides auto-resume)",
+        default=False,
+    )
+    parser.add_argument(
         "--background-color",
         type=str,
         default="auto",
@@ -159,7 +165,7 @@ def main():
     if args.load_dir:
         cfg.load_dir = Path(args.load_dir)
         print(f"Resuming from explicitly provided checkpoint directory: {cfg.load_dir}")
-    elif base_dir.exists():
+    elif base_dir.exists() and not args.from_scratch:
         # Find all run folders that have a nerfstudio_models folder
         run_folders = [
             f for f in base_dir.iterdir() if f.is_dir() and (f / "nerfstudio_models").exists()
