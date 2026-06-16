@@ -29,6 +29,12 @@
         <div class="section-title"><span>■</span> Data Import <span class="status-badge" id="autoLoadStatus">Idle</span></div>
         
         <div class="control-group">
+            <label>0. Combined Scene (.ply) <span id="sceneLoaded" class="status-badge">Not Loaded</span></label>
+            <label for="sceneInput" class="file-upload-btn" id="sceneLabel">Choose Combined scene.ply...</label>
+            <input type="file" id="sceneInput" accept=".ply">
+        </div>
+
+        <div class="control-group">
             <label>1. Surfels (.ply) <span id="surfelLoaded" class="status-badge">Not Loaded</span></label>
             <label for="surfelInput" class="file-upload-btn" id="surfelLabel">Choose Surfels File...</label>
             <input type="file" id="surfelInput" accept=".ply">

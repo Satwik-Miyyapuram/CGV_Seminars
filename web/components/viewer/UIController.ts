@@ -2,6 +2,7 @@ import { SceneManager } from "./SceneManager";
 import { SurfelLoader } from "./SurfelLoader";
 import { GaussianLoader } from "./GaussianLoader";
 import { ConfigLoader } from "./ConfigLoader";
+import { ScenePlyLoader } from "./ScenePlyLoader";
 
 /**
  * UIController encapsulates all user interface event listener bindings,
@@ -37,6 +38,40 @@ export class UIController {
      * File inputs for custom Surfels, Gaussians, and Config JSON files.
      */
     private bindFileInputs() {
+        // 0. Combined Scene File Input (single scene.ply with surfels + gaussians)
+        const sceneInput = document.getElementById('sceneInput') as HTMLInputElement;
+        if (sceneInput) {
+            sceneInput.addEventListener('change', async (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file) {
+                    try {
+                        const buffer = await file.arrayBuffer();
+                        const split = ScenePlyLoader.splitSceneBuffer(buffer);
+
+                        if (split.surfelUrl) {
+                            const deltaVal = parseFloat((document.getElementById('deltaSlider') as HTMLInputElement).value);
+                            await this.surfelLoader.load(split.surfelUrl, deltaVal);
+                            this.surfelLoader.setUseBiScale((document.getElementById('toggleBiScale') as HTMLInputElement).checked);
+                            this.surfelLoader.setVisible((document.getElementById('toggleSurfels') as HTMLInputElement).checked);
+                            ConfigLoader.updateFileLabel('surfelLabel', 'surfelLoaded', `${file.name} (surfels)`);
+                        }
+                        if (split.gaussianUrl) {
+                            await this.gaussianLoader.load(split.gaussianUrl);
+                            this.gaussianLoader.setVisible((document.getElementById('toggleGaussians') as HTMLInputElement).checked);
+                            this.gaussianLoader.setDepthTest((document.getElementById('toggleDepthTest') as HTMLInputElement).checked);
+                            ConfigLoader.updateFileLabel('gaussianLabel', 'gaussianLoaded', `${file.name} (gaussians)`);
+                        }
+
+                        ConfigLoader.updateFileLabel('sceneLabel', 'sceneLoaded', file.name);
+                        console.log(`[UIController] Loaded combined scene: ${split.surfelCount} surfels, ${split.gaussianCount} gaussians.`);
+                    } catch (err) {
+                        console.error("Failed to load combined scene:", err);
+                        alert("Error loading combined scene. Make sure it is a GES scene.ply with a prim_type field.");
+                    }
+                }
+            });
+        }
+
         // 1. Surfels File Input
         const surfelInput = document.getElementById('surfelInput') as HTMLInputElement;
         if (surfelInput) {
