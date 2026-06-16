@@ -267,9 +267,9 @@ class GESStrategy(Strategy):
         )
 
         if is_reset_step and not is_surfel_solidification_buffer:
-            # BUG 14 FIX: Re-enabled opacity reset for surfel phase (3k, 6k).
-            # We use 0.01 as the reset value, matching the paper's default.
-            reset_opa(params=params, optimizers=optimizers, state=state, value=0.01 / 255.0)
+            # Paper's initial τ = 0.1, and τ = 255 * sigmoid(raw).
+            # reset_opa sets sigmoid(raw) = value, so value = τ₀ / 255 = 0.1 / 255.
+            reset_opa(params=params, optimizers=optimizers, state=state, value=0.1 / 255.0)
             mutated = True
 
         if mutated:

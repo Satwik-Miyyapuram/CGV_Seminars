@@ -108,7 +108,8 @@ class Surfel(torch.nn.Module):
         dim_sh = num_sh_bases(sh_degree)
         features_dc = Parameter(torch.zeros((num_points, 3)))
         features_rest = Parameter(torch.zeros((num_points, dim_sh - 1, 3)))  # For future use
-        opacities = Parameter(torch.logit((0.01 / 255.0) * torch.ones((num_points, 1))))
+        # Paper: "optimization starts with τ = 0.1", and τ = 255 * sigmoid(raw)
+        opacities = Parameter(torch.logit((0.1 / 255.0) * torch.ones((num_points, 1))))
         return cls(means, quats, scales, opacities, features_dc, features_rest)
 
 
@@ -412,9 +413,10 @@ class GESModel(Model):
                         was_training = self.training
                         self.eval()
 
-                        for thresh in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]:
+                        # Ablation thresholds in τ-space: τ = 255 * sigmoid(raw)
+                        for tau_thresh in [0.8, 1.0, 30.0, 60.0, 90.0]:
                             with torch.no_grad():
-                                temp_mask = (opacities >= thresh).view(-1)
+                                temp_mask = (opacities >= tau_thresh / 255.0).view(-1)
 
                                 # Apply temporary mask by pushing opacities of pruned points to -100
                                 temp_data = original_opacities_data.clone()
@@ -429,10 +431,10 @@ class GESModel(Model):
                                 draw = ImageDraw.Draw(img)
                                 draw.text(
                                     (10, 10),
-                                    f"Thresh: {thresh:.1f} (Keep: {temp_mask.sum().item()})",
+                                    f"tau_thresh: {tau_thresh:.1f} (Keep: {temp_mask.sum().item()})",
                                     fill=(0, 0, 0),
                                 )
-                                img.save(f"web_assets/ablation_10k/thresh_{thresh:.1f}.png")
+                                img.save(f"web_assets/ablation_10k/tau_thresh_{tau_thresh:.1f}.png")
 
                         if was_training:
                             self.train()
@@ -444,11 +446,14 @@ class GESModel(Model):
                     except Exception as e:
                         print(f"Failed to generate ablation renders: {e}")
 
-                # Final pruning logic: use opacity < 0.9 as the threshold.
-                # Since opacities here is already passed through sigmoid, this checks opacity < 90%.
-                thresh_val = torch.sigmoid(torch.tensor(0.8)).item()
+                # Paper: "discard the surfels with τ < 0.8" where τ = 255 * sigmoid(raw).
+                # Since opacities = sigmoid(raw), the threshold on opacities is 0.8 / 255.
+                tau_threshold = 0.8  # Paper value
+                thresh_val = tau_threshold / 255.0
                 mask = (opacities >= thresh_val).view(-1)
-                print(f"Using opacity threshold {thresh_val:.5f} for pruning.")
+                print(
+                    f"Using tau threshold {tau_threshold} (opacity >= {thresh_val:.6f}) for pruning."
+                )
 
                 discard_mask = ~mask
                 # we save the surfels discarded here so we can use them to initialize the gaussians
@@ -755,7 +760,7 @@ class GESModel(Model):
                     print(
                         f"[TRAIN DEBUG] Step {self.step}: {self.surfel.means.shape[0]} Surfels. "
                         f"Opacities: min={sig_ops.min().item():.6f}, max={sig_ops.max().item():.6f}, mean={sig_ops.mean().item():.6f}",
-                        flush=True
+                        flush=True,
                     )
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
             # Save the first training camera to render progress from a fixed view
