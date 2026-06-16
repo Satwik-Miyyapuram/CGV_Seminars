@@ -15,6 +15,9 @@ GAUSSIAN_SPAWN_STEP = SURFEL_PHASE_END
 # Saving / visualization milestones
 LOSS_GRAPH_STEP = 49999
 FIXED_VIEW_STEPS = [
+    1,
+    100,
+    500,
     1000,
     5000,
     9999,
@@ -34,7 +37,7 @@ FIXED_VIEW_STEPS = [
     45000,
     LOSS_GRAPH_STEP,
 ]
-MILESTONE_STEPS = [9999, 10001, 14999, 15001, 17500, 19999, 20001]
+MILESTONE_STEPS = [1, 9999, 10001, 14999, 15001, 19999, 20001, 30000]
 
 # Derived helper step used for assembling composites in the model
 COMPOSITE_ASSEMBLY_STEP = LOSS_GRAPH_STEP - SURFEL_PHASE_END

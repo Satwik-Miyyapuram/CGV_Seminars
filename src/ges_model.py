@@ -508,8 +508,13 @@ class GESModel(Model):
             self.strategy.step_post_backward(self, step)
 
         def save_milestone_callback(step: int):
-            if step in MILESTONE_STEPS:
-                filename = f"milestone_{step}.pth"
+            if step in MILESTONE_STEPS or (step > 30000 and (step - 30000) % 10000 == 0):
+                from pathlib import Path
+                base_dir = Path(".")
+                if training_callback_attributes.trainer is not None:
+                    base_dir = training_callback_attributes.trainer.base_dir
+                base_dir.mkdir(parents=True, exist_ok=True)
+                filename = base_dir / f"milestone_{step}.pth"
                 torch.save(self.state_dict(), filename)
                 print(f"Saved model state at milestone iteration {step} to {filename}")
 
@@ -669,7 +674,7 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple(MILESTONE_STEPS),
+                update_every_num_iters=1,
                 func=save_milestone_callback,
             )
         )
