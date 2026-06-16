@@ -1459,7 +1459,21 @@ class GESModel(Model):
                     f"[Joint Optimization] Periodic step {self.step} unprojected spawning and contribution pruning..."
                 )
 
-                # 3a. Execute Spawning
+                # 3a. Execute Pruning FIRST based on contribution score < 0.02
+                # (Must happen before spawning, otherwise newly spawned Gaussians
+                # with score=0 get immediately pruned.)
+                if self.gaussian.means.shape[0] > 0:
+                    num_gaussians = self.gaussian.means.shape[0]
+                    if self.gaussian_max_contribution_score.shape[0] == num_gaussians:
+                        keep_mask = self.gaussian_max_contribution_score >= 0.02
+                        num_prune = (~keep_mask).sum().item()
+                        if num_prune > 0:
+                            print(
+                                f"[Contribution Pruning] Pruning {num_prune} Gaussians with contribution score < 0.02."
+                            )
+                            self.strategy.execute_contribution_pruning(self, keep_mask)
+
+                # 3b. Execute Spawning (after pruning, so new Gaussians aren't killed)
                 if len(self.error_spawn_points) > 0:
                     spawn_pts = torch.cat(self.error_spawn_points, dim=0).to(device)
                     spawn_cols = torch.cat(self.error_spawn_colors, dim=0).to(device)
@@ -1470,28 +1484,15 @@ class GESModel(Model):
                     self.error_spawn_points = []
                     self.error_spawn_colors = []
 
-                # 3b. Execute Pruning based on contribution score < 0.02
+                # 3c. Reset contribution score buffer for the next 1000-step cycle
                 if self.gaussian.means.shape[0] > 0:
-                    num_gaussians = self.gaussian.means.shape[0]
-                    # Verify max contribution score buffer size
-                    if self.gaussian_max_contribution_score.shape[0] == num_gaussians:
-                        keep_mask = self.gaussian_max_contribution_score >= 0.02
-                        num_prune = (~keep_mask).sum().item()
-                        if num_prune > 0:
-                            print(
-                                f"[Contribution Pruning] Pruning {num_prune} Gaussians with contribution score < 0.02."
-                            )
-                            self.strategy.execute_contribution_pruning(self, keep_mask)
-
-                        # Reset contribution score buffer to zeros for the next 1000 iterations
-                        self.gaussian_max_contribution_score = torch.zeros(
-                            self.gaussian.means.shape[0], device=device
+                    self.gaussian_max_contribution_score = torch.zeros(
+                        self.gaussian.means.shape[0], device=device
+                    )
+                    state = self.strategy_state["gaussians"]
+                    if "gaussian_max_contribution_score" in state:
+                        state["gaussian_max_contribution_score"] = (
+                            self.gaussian_max_contribution_score.clone()
                         )
-                        # Also keep strategy state in sync
-                        state = self.strategy_state["gaussians"]
-                        if "gaussian_max_contribution_score" in state:
-                            state["gaussian_max_contribution_score"] = (
-                                self.gaussian_max_contribution_score.clone()
-                            )
 
         return loss_dict

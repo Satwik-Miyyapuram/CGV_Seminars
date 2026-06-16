@@ -850,7 +850,7 @@ class GESStrategy(Strategy):
 
         # Initialize scales based on k-nearest neighbors
         try:
-            distances, _ = k_nearest_sklearn(spawn_pts, 3)
+            distances, _ = k_nearest_sklearn(spawn_pts.detach(), 3)
             avg_dist = distances.mean(dim=-1, keepdim=True)
             scales = torch.log(avg_dist.repeat(1, 3))
         except Exception as e:
