@@ -46,6 +46,8 @@ from training_schedule import (
     SURFEL_PHASE_END,
     VISIBILITY_PRUNE_STEP,
 )
+from render import rasterization_surfel
+
 
 
 @dataclass
