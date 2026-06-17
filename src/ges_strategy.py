@@ -37,7 +37,7 @@ class GESStrategy(Strategy):
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
-    prune_scale3d: float = 0.1
+    prune_scale3d: float = 0.5
     prune_scale2d: float = 0.15
     refine_start_iter: int = 500
     refine_stop_iter: int = VISIBILITY_PRUNE_STEP
@@ -389,7 +389,7 @@ class GESStrategy(Strategy):
             )
             is_prune = is_prune | is_too_big
 
-            if state["radii"] is not None:
+            if state["radii"] is not None and not is_surfel:
                 is_too_big_2d = state["radii"] > self.prune_scale2d
                 is_prune = is_prune | is_too_big_2d
         if original_num > 0:
