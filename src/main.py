@@ -7,19 +7,62 @@ import os
 
 os.environ["WANDB_MODE"] = "offline"
 
-# root_dir = Path(__file__).parent.parent.absolute()
-# sys.path.append(str(root_dir))
-# sys.path.append(str(root_dir / "src"))
-# sys.path.append(str(root_dir / "external_code" / "nerfstudio"))
-# sys.path.append(str(root_dir / "external_code" / "gsplat"))
 import argparse
 from pathlib import Path
 
 from nerfstudio.scripts.train import main as ns_train_main
 
-# Import our custom config so it gets registered with Nerfstudio
 import config
 
+def _fix_transforms_json(data_path: Path):
+    """
+    Patch transforms JSON files so they are compatible with NerfstudioDataParser:
+      1. Rename fx/fy → fl_x/fl_y (focal length key naming)
+      2. Add w/h if missing (read from the first image on disk)
+    """
+    import json
+
+    renames = {"fx": "fl_x", "fy": "fl_y"}
+    json_candidates = ["transforms.json", "transforms_train.json", "transforms_val.json", "transforms_test.json"]
+
+    for name in json_candidates:
+        fpath = data_path / name
+        if not fpath.exists():
+            continue
+        with open(fpath, "r") as f:
+            data = json.load(f)
+
+        changed = False
+
+        for old, new in renames.items():
+            if old in data and new not in data:
+                data[new] = data.pop(old)
+                changed = True
+        for frame in data.get("frames", []):
+            for old, new in renames.items():
+                if old in frame and new not in frame:
+                    frame[new] = frame.pop(old)
+                    changed = True
+
+        if "w" not in data or "h" not in data:
+            frames = data.get("frames", [])
+            if frames:
+                first_path = data_path / frames[0].get("file_path", "")
+                if first_path.exists():
+                    from PIL import Image
+                    with Image.open(first_path) as img:
+                        img_w, img_h = img.size
+                    if "w" not in data:
+                        data["w"] = img_w
+                    if "h" not in data:
+                        data["h"] = img_h
+                    changed = True
+                    print(f"  [fix] Added w={img_w}, h={img_h} to {name} (read from {first_path.name})")
+
+        if changed:
+            with open(fpath, "w") as f:
+                json.dump(data, f, indent=4)
+            print(f"  [fix] Patched {fpath.name} for NerfstudioDataParser compatibility")
 
 def main():
     """
@@ -84,15 +127,31 @@ def main():
 
     print(f"Initializing GES Training via Nerfstudio for dataset: {data_path}")
 
-    # Auto-detect dataparser type if set to auto
     dataparser_type = args.dataparser
     if dataparser_type == "auto":
         if (data_path / "sparse").exists() and not (data_path / "transforms.json").exists():
             dataparser_type = "colmap"
             print("Auto-detected raw COLMAP dataset structure. Using ColmapDataParser.")
         elif (data_path / "transforms_train.json").exists() or "nerf_synthetic" in str(data_path):
-            dataparser_type = "blender"
-            print("Auto-detected Blender synthetic dataset structure. Using BlenderDataParser.")
+            import json
+            is_blender = False
+            test_json = data_path / "transforms_train.json"
+            if test_json.exists():
+                try:
+                    with open(test_json) as f:
+                        meta = json.load(f)
+                    is_blender = "camera_angle_x" in meta
+                except Exception:
+                    pass
+            else:
+                is_blender = True
+
+            if is_blender:
+                dataparser_type = "blender"
+                print("Auto-detected Blender synthetic dataset structure. Using BlenderDataParser.")
+            else:
+                dataparser_type = "nerfstudio"
+                print("Found transforms_train.json but no camera_angle_x — using NerfstudioDataParser.")
         else:
             dataparser_type = "nerfstudio"
             print(
@@ -104,7 +163,6 @@ def main():
     cfg.max_num_iterations = args.max_num_iterations
     cfg.logging.writer_names = ["console", "tensorboard"]
 
-    # Configure dataparser and scene properties based on type
     if dataparser_type == "blender":
         from nerfstudio.data.dataparsers.blender_dataparser import BlenderDataParserConfig
 
@@ -135,8 +193,10 @@ def main():
             f"Configured COLMAP dataparser (colmap_path={colmap_path}). Scene properties: background_color={bg_color}, use_real_scene={use_real}"
         )
 
-    else:  # nerfstudio
+    else:
         from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+
+        _fix_transforms_json(data_path)
 
         cfg.pipeline.datamanager.dataparser = NerfstudioDataParserConfig(
             load_3D_points=True,
@@ -158,7 +218,6 @@ def main():
         cfg.pipeline.model.max_num_gaussians = args.max_num_gaussians
         print(f"Restricting max_num_gaussians during training to: {args.max_num_gaussians}")
 
-    # Auto-resume from latest checkpoint if one exists
     scene_name = data_path.name if data_path.name else "ges-scene"
     base_dir = Path(f"outputs/{scene_name}/ges-method")
 
@@ -166,12 +225,10 @@ def main():
         cfg.load_dir = Path(args.load_dir)
         print(f"Resuming from explicitly provided checkpoint directory: {cfg.load_dir}")
     elif base_dir.exists() and not args.from_scratch:
-        # Find all run folders that have a nerfstudio_models folder
         run_folders = [
             f for f in base_dir.iterdir() if f.is_dir() and (f / "nerfstudio_models").exists()
         ]
         if run_folders:
-            # Sort chronologically
             latest_run = sorted(run_folders)[-1]
             ckpt_dir = latest_run / "nerfstudio_models"
             checkpoints = list(ckpt_dir.glob("step-*.ckpt"))
@@ -180,7 +237,6 @@ def main():
                 cfg.load_dir = ckpt_dir
 
     ns_train_main(cfg)
-
 
 if __name__ == "__main__":
     main()

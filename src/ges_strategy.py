@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +19,6 @@ from training_schedule import (
 
 if TYPE_CHECKING:
     from ges_model import GESModel
-
 
 @dataclass
 class GESStrategy(Strategy):
@@ -39,47 +39,35 @@ class GESStrategy(Strategy):
     prune_scale3d: float = 0.05
     prune_scale2d: float = 0.1
     refine_start_iter: int = 500
-    # BUG 2 FIX: Separate stop iterations per phase. Surfel densification
-    # stops at surfel_density_stop_iter (10k), Gaussian densification runs
-    # from gaussian_spawn_iter (20k) to refine_stop_iter_gaussian (30k).
-    # The old single refine_stop_iter=15000 blocked ALL densification after
-    # 15k, meaning Gaussians spawned at 20k could never be split/duplicated.
-    refine_stop_iter: int = VISIBILITY_PRUNE_STEP  # kept for surfel phase
+    refine_stop_iter: int = VISIBILITY_PRUNE_STEP
     refine_stop_iter_gaussian: int = (
-        30000  # stop Gaussian densification at 30k to allow final fine-tuning
+        30000
     )
     reset_every: int = 3000
     refine_every: int = 100
     verbose: bool = False
-    # BUG 1 FIX: Use absolute gradients for densification. Without absgrad,
-    # positive and negative gradients cancel out, severely underestimating
-    # which primitives need to be split/duplicated. This matches nerfstudio's
-    # Splatfacto default (use_absgrad=True) and gsplat DefaultStrategy.
     absgrad: bool = True
 
     surfel_density_stop_iter: int = SURFEL_DENSIFICATION_STOP
     surfel_prune_iter: int = VISIBILITY_PRUNE_STEP
     gaussian_spawn_iter: int = GAUSSIAN_SPAWN_STEP
 
-    # Dynamic culling parameters
-    surfel_visibility_threshold_real: float = 24.0  # Pixel threshold for real scenes
-    surfel_visibility_threshold_synthetic: float = 4.0  # Pixel threshold for synthetic scenes
-    use_real_scene: bool = True  # Whether using real scene threshold
+    surfel_visibility_threshold_real: float = 24.0
+    surfel_visibility_threshold_synthetic: float = 4.0
+    use_real_scene: bool = True
 
     def initialize_state(self, scene_scale: float = 1.0) -> dict[str, Any]:
         """Initialize the strategy state."""
         state = {
             "surfels": {
-                "radii": None,  # This will be updated during training with the actual
-                # radii of the surfels
+                "radii": None,
                 "grad2d": None,
                 "count": None,
                 "surfel_radii_cache": None,
                 "scene_scale": scene_scale,
             },
             "gaussians": {
-                "radii": None,  # This will be updated during training with the actual radii
-                # of the gaussians
+                "radii": None,
                 "grad2d": None,
                 "count": None,
                 "scene_scale": scene_scale,
@@ -90,13 +78,11 @@ class GESStrategy(Strategy):
     def _clean_optimizer_states(self, model: GESModel):
         """Clean up all optimizer states to remove any stale parameter entries."""
         for opt_name, optimizer in model.optimizers.items():
-            # Build set of parameter IDs currently in param_groups
             valid_ids = set()
             for param_group in optimizer.param_groups:
                 for param in param_group.get("params", []):
                     valid_ids.add(id(param))
 
-            # Remove stale state entries (keys must be Tensors whose id is not in valid_ids)
             stale_keys = [
                 k
                 for k in optimizer.state.keys()
@@ -132,22 +118,18 @@ class GESStrategy(Strategy):
         """
         means2d = info["means2d"]
         if self.absgrad:
-            # absgrad is set by the rasterizer when absgrad=True is passed.
-            # It contains |dL/d(means2d)| — the absolute value of gradients.
             if hasattr(means2d, "absgrad") and means2d.absgrad is not None:
                 grads = means2d.absgrad.clone()
             else:
-                # Fallback: if absgrad wasn't computed (e.g. first step or
-                # rasterizer didn't set it), use regular grad with abs().
                 if means2d.grad is not None:
                     grads = means2d.grad.abs().clone()
                 else:
-                    return  # No gradient available yet
+                    return
         else:
             if means2d.grad is not None:
                 grads = means2d.grad.clone()
             else:
-                return  # No gradient available yet
+                return
 
         grads[..., 0] *= info["width"] / 2.0 * info["n_cameras"]
         grads[..., 1] *= info["height"] / 2.0 * info["n_cameras"]
@@ -166,31 +148,24 @@ class GESStrategy(Strategy):
                 state[key] = torch.zeros(n_items, device=grads.device, dtype=torch.float32)
                 if old_tensor is not None:
                     state[key][: old_tensor.shape[0]] = old_tensor
-        # For 2DGS (surfel) rasterization, radii shape is [C, N, 2] (two axis-
-        # aligned bounding-box radii). For standard 3DGS, it's [C, N].
-        # We need to collapse the radius dimension(s) to [C, N].
         if info["radii"].dim() == 3:
-            # [C, N, 2] -> check both radii > 0
             sel = (info["radii"] > 0.0).all(dim=-1)
             radii = info["radii"][sel].max(dim=-1).values
         else:
-            # [C, N]
             sel = info["radii"] > 0.0
             radii = info["radii"][sel]
 
-        gs_ids = torch.where(sel)[1]  # [nnz]
-        grads = grads[sel]  # [nnz, 2]
+        gs_ids = torch.where(sel)[1]
+        grads = grads[sel]
 
         state["grad2d"].index_add_(0, gs_ids, grads.norm(dim=-1))
         state["count"].index_add_(0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float32))
 
-        # ensure radii buffer is float so the indexed assignment matches dtypes
         if state["radii"].dtype != torch.float32:
             state["radii"] = state["radii"].to(dtype=torch.float32, device=grads.device)
 
         state["radii"][gs_ids] = torch.maximum(
             state["radii"][gs_ids],
-            # normalize radii to [0, 1] screen space
             (radii / float(max(info["width"], info["height"]))).to(
                 device=grads.device, dtype=torch.float32
             ),
@@ -198,22 +173,17 @@ class GESStrategy(Strategy):
 
     def step_post_backward(self, model: GESModel, step: int):
         """Operations to be performed after the `loss.backward()` call."""
-        # Determine what is being densified based on the current phase
         if step <= self.surfel_density_stop_iter:
-            # Surfel densification phase: steps 0 - 10k
             if step >= self.refine_stop_iter:
-                return  # Surfel refinement has stopped
+                return
             target_name = "surfels"
             is_surfel_phase = True
         elif step > self.gaussian_spawn_iter:
-            # Gaussian densification phase: steps 20k+
             if step >= self.refine_stop_iter_gaussian:
-                return  # Gaussian refinement has stopped
+                return
             target_name = "gaussians"
             is_surfel_phase = False
         else:
-            # Middle phase (10k-20k): no densification, just refining
-            # existing surfel geometry with frozen opacity.
             return
 
         if not is_surfel_phase and model.gaussian.means.shape[0] == 0:
@@ -226,7 +196,6 @@ class GESStrategy(Strategy):
         state = model.strategy_state[target_name]
         info = model.info.get(target_name)
 
-        # Sync contribution score buffer to state dictionary before strategy operations
         if not is_surfel_phase and hasattr(model, "gaussian_max_contribution_score"):
             if model.gaussian_max_contribution_score.shape[0] == model.gaussian.means.shape[0]:
                 state["gaussian_max_contribution_score"] = model.gaussian_max_contribution_score
@@ -243,19 +212,18 @@ class GESStrategy(Strategy):
                     params, optimizers, state, step, is_surfel_phase, max_num
                 )
                 target_type = "Surfels"
-                if self.verbose or is_surfel_phase:  # Always log surfel densification
+                if self.verbose or is_surfel_phase:
                     print(
                         f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
                         f"Now having {len(params['means'])} {target_type}."
                     )
                 num_prune = self._prune_gs(params, optimizers, state, step, is_surfel_phase)
-                if self.verbose or is_surfel_phase:  # Always log surfel pruning
+                if self.verbose or is_surfel_phase:
                     print(
                         f"Step {step}: {num_prune} {target_type} pruned. "
                         f"Now having {len(params['means'])} {target_type}."
                     )
             else:
-                # Do nothing! GES uses error-map spawning and contribution score pruning, NOT clone/split
                 pass
             state["grad2d"].zero_()
             state["count"].zero_()
@@ -263,9 +231,6 @@ class GESStrategy(Strategy):
             torch.cuda.empty_cache()
             mutated = True
 
-        # Reset opacity every reset_every steps.
-        # For surfels: reset at 3k and 6k. Skip 9k so they can solidify before 10k cull.
-        # For gaussians: reset every 3k steps (21k, 24k, etc.)
         is_reset_step = step % self.reset_every == 0
         is_surfel_solidification_buffer = (
             is_surfel_phase and step >= self.surfel_density_stop_iter - self.reset_every
@@ -273,14 +238,8 @@ class GESStrategy(Strategy):
 
         if is_reset_step and not is_surfel_solidification_buffer:
             if is_surfel_phase:
-                # Paper's initial τ = 0.1, and τ = 255 * sigmoid(raw).
-                # reset_opa sets sigmoid(raw) = value, so value = τ₀ / 255 = 0.1 / 255.
                 reset_opa(params=params, optimizers=optimizers, state=state, value=0.1 / 255.0)
             else:
-                # Standard 3DGS opacity: opacity = sigmoid(raw). No 255× multiplier.
-                # Standard value is 0.01 (gsplat DefaultStrategy default).
-                # Only reset once at 21K to give Gaussians a clean start;
-                # after that, let them converge without interruption.
                 if step <= self.gaussian_spawn_iter + self.reset_every:
                     reset_opa(params=params, optimizers=optimizers, state=state, value=0.01)
             mutated = True
@@ -307,16 +266,8 @@ class GESStrategy(Strategy):
                 target_obj.features_rest
             ]
 
-            # Clean up optimizer states to remove any stale entries
             self._clean_optimizer_states(model)
 
-            # FIX: Sync model.surfel_radii_cache with the state's cache after
-            # densification changes the surfel count. The gsplat ops (split,
-            # duplicate, remove) update tensors in the state dict, but
-            # model.surfel_radii_cache is a separate registered buffer that
-            # was never resized. This caused an IndexError at step 10k when
-            # execute_discard_phase tried to mask a stale-sized cache
-            # (e.g. [4817]) with the current surfel opacity mask (e.g. [4925]).
             if is_surfel_phase:
                 new_count = len(params["means"])
                 if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
@@ -324,13 +275,11 @@ class GESStrategy(Strategy):
                 else:
                     model.surfel_radii_cache = torch.zeros(new_count, device=model.device)
             else:
-                # Retrieve the updated contribution score buffer from state and sync to model
                 if "gaussian_max_contribution_score" in state:
                     model.gaussian_max_contribution_score = state.pop(
                         "gaussian_max_contribution_score"
                     )
         else:
-            # Clean up the state dictionary if strategy did not mutate parameters
             if not is_surfel_phase:
                 state.pop("gaussian_max_contribution_score", None)
 
@@ -344,6 +293,7 @@ class GESStrategy(Strategy):
         is_surfel: bool = False,
         max_num: int = -1,
     ):
+        """Densify: clone small high-gradient primitives and split large high-gradient ones (surfels use 2D scale checks)."""
         count = state["count"]
         grads = state["grad2d"] / count.clamp_min(1)
         if step >= 500:
@@ -360,10 +310,7 @@ class GESStrategy(Strategy):
         if max_num > 0 and original_num >= max_num:
             is_grad_high = torch.zeros_like(is_grad_high)
 
-        # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
-        # projection and receives 0 gradient. It never shrinks during optimization.
-        # If we include it in the max() check, it will falsely label surfels as "not small"
-        # and prevent duplication, forcing splits instead.
+        # Surfels are 2D (2DGS): their 3rd (z) scale is unused, so size checks use only x,y.
         scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
         is_small = (
             torch.exp(scales_to_check).max(dim=-1).values
@@ -378,7 +325,6 @@ class GESStrategy(Strategy):
                 is_duplicate.zero_()
                 is_split.zero_()
             else:
-                # Limit duplicates to allowed_growth
                 dup_indices = torch.where(is_duplicate)[0]
                 if len(dup_indices) > allowed_growth:
                     is_duplicate[dup_indices[allowed_growth:]] = False
@@ -386,7 +332,6 @@ class GESStrategy(Strategy):
                 else:
                     allowed_growth -= len(dup_indices)
 
-                # Limit splits to remaining allowed_growth
                 split_indices = torch.where(is_split)[0]
                 if len(split_indices) > allowed_growth:
                     is_split[split_indices[allowed_growth:]] = False
@@ -420,6 +365,7 @@ class GESStrategy(Strategy):
         step: int,
         is_surfel: bool = False,
     ):
+        """Prune primitives that are too transparent or too large (surfels use 2D scale/radius checks)."""
         prune_opa_thresh = self.prune_opa if is_surfel else 0.01
         sig_opacities = torch.sigmoid(params["opacities"].flatten())
         is_prune = sig_opacities < prune_opa_thresh
@@ -431,21 +377,15 @@ class GESStrategy(Strategy):
                     f"opacities (sigmoid): min={sig_opacities.min().item():.6f}, max={sig_opacities.max().item():.6f}, mean={sig_opacities.mean().item():.6f}\n"
                 )
         if step > self.reset_every:
-            # BUG 10 FIX: For 2DGS (surfels), the 3rd scale (z-axis) is ignored during
-            # projection and receives 0 gradient. It never shrinks during optimization.
-            # If we include it in the max() check, it will falsely trigger the "too big"
-            # threshold and aggressively prune almost all surfels in the scene!
+            # Surfels are 2D (2DGS): their 3rd (z) scale is unused, so size checks use only x,y.
             scales_to_check = params["scales"][:, :2] if is_surfel else params["scales"]
 
-            # We reverted the 50% relaxation here because forced splitting (opacity gated)
-            # in _grow_gs now cleanly solves the holes without needing massive 50% blobs.
             is_too_big = (
                 torch.exp(scales_to_check).max(dim=-1).values
                 > self.prune_scale3d * state["scene_scale"]
             )
             is_prune = is_prune | is_too_big
 
-            # Screen-space size culling: prune primitives that are too large in screen space
             if state["radii"] is not None:
                 is_too_big_2d = state["radii"] > self.prune_scale2d
                 is_prune = is_prune | is_too_big_2d
@@ -474,7 +414,6 @@ class GESStrategy(Strategy):
         optimizers = model.get_densification_optimizers(self.surfel_density_stop_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-        # Update model attributes and optimizer param groups
         model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
         model.surfel.quats = params["quats"]
@@ -492,10 +431,8 @@ class GESStrategy(Strategy):
             model.surfel.features_rest
         ]
 
-        # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
 
-        # Prune the unnormalized radii cache to match the new param shape
         if (
             hasattr(model, "surfel_radii_cache")
             and model.surfel_radii_cache is not None
@@ -519,33 +456,21 @@ class GESStrategy(Strategy):
         - Coverage is π * radius² * opacity
         - Prune surfels with coverage < n_threshold
         """
-        # Select threshold based on scene type
         n_threshold = (
             self.surfel_visibility_threshold_real
             if self.use_real_scene
             else self.surfel_visibility_threshold_synthetic
         )
 
-        # Use the unnormalized pixel-unit radii cache directly from the model,
-        # which avoids the strategy state's normalization and periodic zeroing.
         max_2d_radius = model.surfel_radii_cache.detach()
 
-        # BUG 3 FIX: surfel_radii_cache can have shape [C, N, 2] or [N, 2] or [N]
-        # from 2DGS rasterization. Reduce to [N] scalar per surfel for the
-        # area computation. For [C, N, 2], max over cameras (dim 0) then max
-        # over the 2 axis radii (dim -1). For [N, 2], just max over axis.
         if max_2d_radius.dim() == 3:
-            # [C, N, 2] -> max over cameras -> [N, 2] -> max over axes -> [N]
             max_2d_radius = max_2d_radius.max(dim=0).values.max(dim=-1).values
         elif max_2d_radius.dim() == 2:
-            # [N, 2] -> max over axes -> [N]
             max_2d_radius = max_2d_radius.max(dim=-1).values
-        # else: already [N], no change needed
 
         opacities = torch.sigmoid(model.surfel.opacities.detach()).squeeze()
 
-        # Dynamic culling: approximate pixel coverage for each surfel
-        # Coverage approximation: π * max_2d_radius² * opacity
         approx_cover = (3.14159 * max_2d_radius**2) * opacities
         visibility_mask = approx_cover > n_threshold
         num_pruned = torch.sum(~visibility_mask).item()
@@ -567,7 +492,6 @@ class GESStrategy(Strategy):
         optimizers = model.get_densification_optimizers(self.surfel_prune_iter)
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-        # Update model attributes and optimizer param groups
         model.surfel.means = params["means"]
         model.optimizers["surfel_means"].param_groups[0]["params"] = [model.surfel.means]
         model.surfel.quats = params["quats"]
@@ -585,10 +509,8 @@ class GESStrategy(Strategy):
             model.surfel.features_rest
         ]
 
-        # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
 
-        # Prune the unnormalized radii cache to match the new param shape
         if (
             hasattr(model, "surfel_radii_cache")
             and model.surfel_radii_cache is not None
@@ -629,7 +551,6 @@ class GESStrategy(Strategy):
         """
         num_new_gaussians = saved_gaussian_seeds.shape[0]
 
-        # Skip if no seeds to spawn from
         if num_new_gaussians == 0:
             print(
                 "No Gaussian seeds to spawn from (all surfels were kept). Skipping Gaussian spawning."
@@ -652,7 +573,6 @@ class GESStrategy(Strategy):
                 saved_gaussian_seeds = saved_gaussian_seeds[:allowed_new_gaussians]
                 num_new_gaussians = allowed_new_gaussians
 
-                # Slice the saved attributes on model to keep their sizes matched
                 if (
                     hasattr(model, "saved_gaussian_features_dc")
                     and model.saved_gaussian_features_dc.shape[0] > 0
@@ -680,7 +600,6 @@ class GESStrategy(Strategy):
                 ):
                     model.saved_gaussian_quats = model.saved_gaussian_quats[:allowed_new_gaussians]
 
-        # Get saved features if they exist, otherwise fallback to mean surfel features
         if (
             hasattr(model, "saved_gaussian_features_dc")
             and model.saved_gaussian_features_dc.shape[0] == num_new_gaussians
@@ -707,23 +626,16 @@ class GESStrategy(Strategy):
             )
             features_rest = surfel_features_rest_mean.expand(num_new_gaussians, -1, -1).clone()
 
-        # BUG 13 FIX: Initialize Gaussian scales SAFELY below the pruning threshold.
-        # Previously it was `torch.ones * -1.0`, which evaluates to ~0.367.
-        # Since 0.367 > prune_scale3d (0.1), EVERY newly spawned Gaussian was
-        # instantly pruned at the very next iteration (step 20,100).
+        # Spawn with a z-scale safely below the 3D prune threshold so new Gaussians aren't
+        # immediately pruned for being "too large".
         scene_scale = model.strategy_state["gaussians"]["scene_scale"]
-        import math
-
         safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
 
-        # Get saved scales if they exist, otherwise fallback to global safe scale
         if (
             hasattr(model, "saved_gaussian_scales")
             and model.saved_gaussian_scales.shape[0] == num_new_gaussians
         ):
             scales = model.saved_gaussian_scales.clone()
-            # Constrain the Z-axis scale (which is ignored for 2D surfels but active for 3D Gaussians)
-            # to be thin, preventing massive vertical spikes/fog.
             z_scale = torch.clamp(scales[:, 2], max=safe_scale)
             scales = scales.clone()
             scales[:, 2] = z_scale
@@ -733,7 +645,6 @@ class GESStrategy(Strategy):
             )
             scales = torch.ones((num_new_gaussians, 3), device=device) * safe_scale
 
-        # Get saved quats if they exist, otherwise fallback to identity [1, 0, 0, 0]
         if (
             hasattr(model, "saved_gaussian_quats")
             and model.saved_gaussian_quats.shape[0] == num_new_gaussians
@@ -752,9 +663,9 @@ class GESStrategy(Strategy):
             "scales": scales,
             "opacities": torch.logit(
                 0.1 * torch.ones((num_new_gaussians, 1), device=device)
-            ),  # Initialize opacities to 0.1 as in standard 3DGS
-            "features_dc": features_dc,  # Use original discarded surfel colors
-            "features_rest": features_rest,  # Use original discarded surfel SH
+            ),
+            "features_dc": features_dc,
+            "features_rest": features_rest,
         }
 
         def param_fn(name: str, p: torch.Tensor) -> torch.Tensor:
@@ -776,7 +687,6 @@ class GESStrategy(Strategy):
         }
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-        # Update model attributes and optimizer param groups
         model.gaussian.means = params["means"]
         model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
         model.gaussian.quats = params["quats"]
@@ -796,10 +706,8 @@ class GESStrategy(Strategy):
             model.gaussian.features_rest
         ]
 
-        # Clean up optimizer states to remove any stale entries
         self._clean_optimizer_states(model)
 
-        # Resize contribution score buffer to match the new size
         if hasattr(model, "gaussian_max_contribution_score"):
             model.gaussian_max_contribution_score = torch.cat(
                 [
@@ -807,7 +715,6 @@ class GESStrategy(Strategy):
                     torch.zeros(num_new_gaussians, device=device),
                 ]
             )
-            # Also keep strategy state in sync
             state = model.strategy_state["gaussians"]
             if (
                 "gaussian_max_contribution_score" in state
@@ -853,15 +760,13 @@ class GESStrategy(Strategy):
         device = model.device
         dim_sh = num_sh_bases(model.config.sh_degree)
 
-        # Initialize features_dc from ground truth colors
         if model.config.sh_degree > 0:
-            features_dc = RGB2SH(spawn_cols)  # [N, 3]
+            features_dc = RGB2SH(spawn_cols)
         else:
-            features_dc = torch.logit(spawn_cols, eps=1e-10)  # [N, 3]
+            features_dc = torch.logit(spawn_cols, eps=1e-10)
 
         features_rest = torch.zeros((num_new_gaussians, dim_sh - 1, 3), device=device)
 
-        # Initialize scales based on k-nearest neighbors
         try:
             distances, _ = k_nearest_sklearn(spawn_pts.detach(), 3)
             avg_dist = distances.mean(dim=-1, keepdim=True).clamp(min=1e-7)
@@ -871,19 +776,13 @@ class GESStrategy(Strategy):
                 f"Warning: k_nearest_sklearn failed during error spawn: {e}. Falling back to scene scale."
             )
             scene_scale = model.strategy_state["gaussians"]["scene_scale"]
-            import math
-
             safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
             scales = torch.ones((num_new_gaussians, 3), device=device) * safe_scale
 
-        # Clamp scales to safe thickness/size
         scene_scale = model.strategy_state["gaussians"]["scene_scale"]
-        import math
-
         safe_scale = math.log(max(1e-5, self.prune_scale3d * scene_scale * 0.5))
         scales = torch.clamp(scales, max=safe_scale)
 
-        # Initialize quats to identity
         quats = torch.zeros((num_new_gaussians, 4), device=device)
         quats[:, 0] = 1.0
 
@@ -915,7 +814,6 @@ class GESStrategy(Strategy):
         }
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-        # Update model attributes and optimizer param groups
         model.gaussian.means = params["means"]
         model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
         model.gaussian.quats = params["quats"]
@@ -935,10 +833,8 @@ class GESStrategy(Strategy):
             model.gaussian.features_rest
         ]
 
-        # Clean up optimizer states
         self._clean_optimizer_states(model)
 
-        # Resize contribution score buffer to match the new size
         if hasattr(model, "gaussian_max_contribution_score"):
             model.gaussian_max_contribution_score = torch.cat(
                 [
@@ -946,7 +842,6 @@ class GESStrategy(Strategy):
                     torch.zeros(num_new_gaussians, device=device),
                 ]
             )
-            # Also keep strategy state in sync
             state = model.strategy_state["gaussians"]
             if (
                 "gaussian_max_contribution_score" in state
@@ -981,7 +876,6 @@ class GESStrategy(Strategy):
         }
         _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-        # Update model attributes and optimizer param groups
         model.gaussian.means = params["means"]
         model.optimizers["gaussian_means"].param_groups[0]["params"] = [model.gaussian.means]
         model.gaussian.quats = params["quats"]
@@ -1001,10 +895,8 @@ class GESStrategy(Strategy):
             model.gaussian.features_rest
         ]
 
-        # Clean up optimizer states
         self._clean_optimizer_states(model)
 
-        # Prune max contribution score buffer
         if hasattr(model, "gaussian_max_contribution_score"):
             model.gaussian_max_contribution_score = model.gaussian_max_contribution_score[keep_mask]
 
@@ -1032,11 +924,9 @@ class GESStrategy(Strategy):
             device = model.device
             height, width = gt_img.shape[:2]
 
-            # 1. Error-based Spawning: Accumulate high-error points
-            error_map = torch.mean((gt_img.detach() - pred_img.detach()) ** 2, dim=-1)  # [H, W]
+            error_map = torch.mean((gt_img.detach() - pred_img.detach()) ** 2, dim=-1)
             probs = error_map.flatten() / (error_map.sum() + 1e-8)
 
-            # Sample N = 100 points
             N = 100
             sampled_indices = torch.multinomial(probs, num_samples=N, replacement=True)
             u = sampled_indices % width
@@ -1044,9 +934,8 @@ class GESStrategy(Strategy):
 
             surfel_depth = outputs.get("surfel_depth")
             if surfel_depth is not None:
-                # Extract depth
-                z = surfel_depth.squeeze(0)[v, u, 0]  # [N]
-                valid_mask = z < 9.0  # depth < 9.0 are valid surfel surfaces
+                z = surfel_depth.squeeze(0)[v, u, 0]
+                valid_mask = z < 9.0
 
                 if valid_mask.sum() > 0:
                     u_v = u[valid_mask]
@@ -1057,24 +946,20 @@ class GESStrategy(Strategy):
                     fx, fy = intrinsic_mat[0, 0, 0], intrinsic_mat[0, 1, 1]
                     cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
 
-                    # Unproject to camera space
                     x_cam = (u_v - cx) * z_v / fx
                     y_cam = (v_v - cy) * z_v / fy
-                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1)  # [M, 3]
+                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1)
 
-                    # Transform to world space
                     c2w = outputs["camera_to_world"]
                     R = c2w[0, :3, :3]
                     T = c2w[0, :3, 3]
-                    pos_world = torch.matmul(pos_cam, R.T) + T  # [M, 3]
+                    pos_world = torch.matmul(pos_cam, R.T) + T
 
-                    # Retrieve ground truth color
-                    color = gt_img[v_v, u_v]  # [M, 3]
+                    color = gt_img[v_v, u_v]
 
                     model.error_spawn_points.append(pos_world.cpu())
                     model.error_spawn_colors.append(color.cpu())
 
-            # 2. Score-based Pruning: Update maximum contribution scores
             gaussian_alpha = outputs.get("gaussian_alpha")
             surfel_alpha = outputs.get("surfel_alpha")
             x_screen = outputs.get("x_screen")
@@ -1089,27 +974,23 @@ class GESStrategy(Strategy):
             ):
                 num_gaussians = model.gaussian.means.shape[0]
 
-                # Verify max contribution score buffer size
                 if model.gaussian_max_contribution_score.shape[0] != num_gaussians:
                     model.gaussian_max_contribution_score = torch.zeros(
                         num_gaussians, device=device
                     )
 
-                # Convert log-features to base RGB color
                 c_rgb = torch.clamp(SH2RGB(model.gaussian.features_dc.detach()), 0.0, 1.0)
-                c_i = c_rgb.max(dim=-1).values  # [N]
-                alpha_i = torch.sigmoid(model.gaussian.opacities.detach()).flatten()  # [N]
+                c_i = c_rgb.max(dim=-1).values
+                alpha_i = torch.sigmoid(model.gaussian.opacities.detach()).flatten()
 
-                # Sample W_S and W_G at Gaussian center
                 x_norm = (x_screen / width) * 2.0 - 1.0
                 y_norm = (y_screen / height) * 2.0 - 1.0
                 grid = (
                     torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)
-                )  # [1, 1, N, 2]
+                )
 
-                # surfel_alpha permuted for grid_sample
-                surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
-                gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
+                surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2)
+                gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2)
 
                 sampled_W_S = torch.nn.functional.grid_sample(
                     surfel_alpha_map,
@@ -1117,32 +998,26 @@ class GESStrategy(Strategy):
                     mode="nearest",
                     padding_mode="border",
                     align_corners=False,
-                ).flatten()  # [N]
+                ).flatten()
                 sampled_W_G = torch.nn.functional.grid_sample(
                     gaussian_alpha_map,
                     grid,
                     mode="nearest",
                     padding_mode="border",
                     align_corners=False,
-                ).flatten()  # [N]
+                ).flatten()
 
-                # Compute contribution score
-                score = (c_i * alpha_i) / (sampled_W_S + sampled_W_G + 1e-5)  # [N]
+                score = (c_i * alpha_i) / (sampled_W_S + sampled_W_G + 1e-5)
 
-                # Update running maximum score
                 model.gaussian_max_contribution_score = torch.maximum(
                     model.gaussian_max_contribution_score, score
                 )
 
-            # 3. Periodic Spawning and Pruning Callback (Every 1000 steps)
             if step > 20000 and step % 1000 == 0:
                 print(
                     f"[Joint Optimization] Periodic step {step} unprojected spawning and contribution pruning..."
                 )
 
-                # 3a. Execute Pruning FIRST based on contribution score < 0.02
-                # (Must happen before spawning, otherwise newly spawned Gaussians
-                # with score=0 get immediately pruned.)
                 if model.gaussian.means.shape[0] > 0:
                     num_gaussians = model.gaussian.means.shape[0]
                     if model.gaussian_max_contribution_score.shape[0] == num_gaussians:
@@ -1154,18 +1029,15 @@ class GESStrategy(Strategy):
                             )
                             self.execute_contribution_pruning(model, keep_mask)
 
-                # 3b. Execute Spawning (after pruning, so new Gaussians aren't killed)
                 if len(model.error_spawn_points) > 0:
                     spawn_pts = torch.cat(model.error_spawn_points, dim=0).to(device)
                     spawn_cols = torch.cat(model.error_spawn_colors, dim=0).to(device)
 
                     self.spawn_gaussians_from_error_seeds(model, spawn_pts, spawn_cols)
 
-                    # Clear lists
                     model.error_spawn_points = []
                     model.error_spawn_colors = []
 
-                # 3c. Reset contribution score buffer for the next 1000-step cycle
                 if model.gaussian.means.shape[0] > 0:
                     model.gaussian_max_contribution_score = torch.zeros(
                         model.gaussian.means.shape[0], device=device
