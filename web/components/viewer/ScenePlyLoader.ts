@@ -1,9 +1,8 @@
 /**
  * ScenePlyLoader splits a single combined GES scene PLY (scene.ply) — which tags
  * every vertex with a `prim_type` field (0 = gaussian, 1 = surfel) — back into two
- * standard 3DGS PLY blobs. The `prim_type` property is stripped from the output so
- * the existing SurfelLoader / GaussianLoader (and the @mkkellogg PLY parser) consume
- * them unchanged.
+ * standard 3DGS PLY blobs. The `prim_type` property is stripped from the output so the
+ * @mkkellogg PLY parser (used by GesViewer) consumes them unchanged.
  *
  * Combined PLY layout (binary_little_endian):
  *   x,y,z, nx,ny,nz, f_dc_0..2, [f_rest_0..N], opacity, scale_0..2, rot_0..3, prim_type(uchar)
@@ -41,29 +40,9 @@ export interface SplitScene {
     radius: number;
 }
 
-/** One merged PLY (all primitives, prim_type stripped) for the single-object render path. */
-export interface MergedScene {
-    url: string;
-    count: number;
-    center: [number, number, number];
-    radius: number;
-}
-
 export class ScenePlyLoader {
     /**
-     * Fetch a combined scene.ply and split it into surfel + gaussian PLY object URLs.
-     */
-    public static async splitSceneFromUrl(url: string): Promise<SplitScene> {
-        const res = await fetch(url);
-        if (!res.ok) {
-            throw new Error(`Failed to fetch scene PLY (${res.status}) from ${url}`);
-        }
-        const buffer = await res.arrayBuffer();
-        return this.splitSceneBuffer(buffer);
-    }
-
-    /**
-     * Split an in-memory combined scene.ply ArrayBuffer.
+     * Split an in-memory combined scene.ply ArrayBuffer into surfel + gaussian PLY object URLs.
      */
     public static splitSceneBuffer(buffer: ArrayBuffer): SplitScene {
         const bytes = new Uint8Array(buffer);
@@ -191,91 +170,6 @@ export class ScenePlyLoader {
             center: [mx, my, mz],
             radius,
         };
-    }
-
-    /**
-     * Merge the combined scene into ONE standard 3DGS PLY (all primitives, prim_type
-     * stripped) — for the single-object render path where surfels + gaussians are drawn
-     * together with a shared z-buffer instead of the custom two-pass.
-     */
-    public static async mergedSceneFromUrl(url: string): Promise<MergedScene> {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Failed to fetch scene PLY (${res.status}) from ${url}`);
-        return this.mergedSceneBuffer(await res.arrayBuffer());
-    }
-
-    public static mergedSceneBuffer(buffer: ArrayBuffer): MergedScene {
-        const bytes = new Uint8Array(buffer);
-
-        const marker = "end_header\n";
-        const probeLen = Math.min(bytes.length, 1 << 16);
-        const headerText = new TextDecoder("ascii").decode(bytes.subarray(0, probeLen));
-        const markerIdx = headerText.indexOf(marker);
-        if (markerIdx < 0) throw new Error("Invalid PLY: 'end_header' not found.");
-        const dataOffset = markerIdx + marker.length;
-
-        let format = "";
-        let vertexCount = 0;
-        const properties: PlyProperty[] = [];
-        let inVertexElement = false;
-        let offset = 0;
-        for (const rawLine of headerText.substring(0, markerIdx).split("\n")) {
-            const line = rawLine.trim();
-            if (line.startsWith("format ")) format = line.split(/\s+/)[1];
-            else if (line.startsWith("element ")) {
-                const parts = line.split(/\s+/);
-                inVertexElement = parts[1] === "vertex";
-                if (inVertexElement) vertexCount = parseInt(parts[2], 10);
-            } else if (line.startsWith("property ") && inVertexElement) {
-                const [, type, name] = line.split(/\s+/);
-                const size = PLY_TYPE_SIZES[type];
-                if (size === undefined) throw new Error(`Unsupported PLY property type: ${type}`);
-                properties.push({ name, type, size, offset });
-                offset += size;
-            }
-        }
-        if (format !== "binary_little_endian") {
-            throw new Error(`Unsupported PLY format '${format}'. Expected binary_little_endian.`);
-        }
-
-        const stride = offset;
-        const primProp = properties.find((p) => p.name === PRIM_TYPE_FIELD);
-        // Output keeps every property except prim_type (which a stock 3DGS parser can't read).
-        const outProps = primProp ? properties.filter((p) => p !== primProp) : properties;
-        const outStride = primProp ? stride - primProp.size : stride;
-
-        const xProp = properties.find((p) => p.name === "x")!;
-        const yProp = properties.find((p) => p.name === "y")!;
-        const zProp = properties.find((p) => p.name === "z")!;
-        const view = new DataView(buffer);
-
-        const body = new Uint8Array(vertexCount * outStride);
-        let cursor = 0;
-        let sx = 0, sy = 0, sz = 0, sxx = 0, syy = 0, szz = 0;
-        for (let i = 0; i < vertexCount; i++) {
-            const base = dataOffset + i * stride;
-            if (primProp) {
-                body.set(bytes.subarray(base, base + primProp.offset), cursor);
-                body.set(bytes.subarray(base + primProp.offset + primProp.size, base + stride),
-                    cursor + primProp.offset);
-            } else {
-                body.set(bytes.subarray(base, base + stride), cursor);
-            }
-            cursor += outStride;
-
-            const x = view.getFloat32(base + xProp.offset, true);
-            const y = view.getFloat32(base + yProp.offset, true);
-            const z = view.getFloat32(base + zProp.offset, true);
-            sx += x; sy += y; sz += z; sxx += x * x; syy += y * y; szz += z * z;
-        }
-
-        const n = Math.max(vertexCount, 1);
-        const mx = sx / n, my = sy / n, mz = sz / n;
-        const radius = 2.5 * Math.sqrt(
-            Math.max(sxx / n - mx * mx, 0) + Math.max(syy / n - my * my, 0) + Math.max(szz / n - mz * mz, 0)
-        ) || 1;
-
-        return { url: this.makePlyUrl(outProps, vertexCount, body), count: vertexCount, center: [mx, my, mz], radius };
     }
 
     /**

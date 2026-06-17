@@ -1,4 +1,3 @@
-import * as THREE from "three";
 import { ScenePlyLoader } from "./ScenePlyLoader";
 
 /**
@@ -38,22 +37,7 @@ export class ConfigLoader {
 
         let loadedCount = 0;
 
-        // 1. Fetch Config
-        try {
-            console.log("[ConfigLoader] Checking for default config.json...");
-            const res = await fetch('/web_assets/config.json');
-            if (res.ok) {
-                const config = await res.json();
-                callbacks.onConfigLoaded(config);
-                this.updateFileLabel('configLabel', 'configLoaded', 'config.json');
-                console.log("[ConfigLoader] Auto-loaded config.json successfully.");
-                loadedCount++;
-            }
-        } catch (err) {
-            console.log("[ConfigLoader] config.json auto-load skipped:", err);
-        }
-
-        // 2. Prefer a single combined scene.ply (surfels + gaussians tagged by prim_type).
+        // single combined scene.ply (surfels + gaussians tagged by prim_type).
         let loadedCombined = false;
         try {
             console.log("[ConfigLoader] Checking for default truck_1 scene.ply...");
@@ -86,36 +70,6 @@ export class ConfigLoader {
             console.log("[ConfigLoader] scene.ply auto-load skipped:", err);
         }
 
-        // 3. Fall back to legacy separate surfels.ply / gaussians.ply.
-        if (!loadedCombined) {
-            try {
-                console.log("[ConfigLoader] Checking for default surfels.ply...");
-                const res = await fetch('/web_assets/surfels.ply');
-                const contentType = res.headers.get('content-type') || '';
-                if (res.ok && !contentType.includes('text/html')) {
-                    await callbacks.onSurfelsLoaded('/web_assets/surfels.ply');
-                    this.updateFileLabel('surfelLabel', 'surfelLoaded', 'surfels.ply');
-                    console.log("[ConfigLoader] Auto-loaded surfels.ply successfully.");
-                    loadedCount++;
-                }
-            } catch (err) {
-                console.log("[ConfigLoader] surfels.ply auto-load skipped:", err);
-            }
-
-            try {
-                console.log("[ConfigLoader] Checking for default gaussians.ply...");
-                const res = await fetch('/web_assets/gaussians.ply');
-                const contentType = res.headers.get('content-type') || '';
-                if (res.ok && !contentType.includes('text/html')) {
-                    await callbacks.onGaussiansLoaded('/web_assets/gaussians.ply');
-                    this.updateFileLabel('gaussianLabel', 'gaussianLoaded', 'gaussians.ply');
-                    console.log("[ConfigLoader] Auto-loaded gaussians.ply successfully.");
-                    loadedCount++;
-                }
-            } catch (err) {
-                console.log("[ConfigLoader] gaussians.ply auto-load skipped:", err);
-            }
-        }
 
         // Update main auto-load status badge in UI
         if (autoStatus) {

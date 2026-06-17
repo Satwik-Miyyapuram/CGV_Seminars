@@ -9,6 +9,7 @@ import { ConfigLoader } from "./ConfigLoader";
  *   - `viewerBackground` [r, g, b]                                    (background colour)
  */
 export class UIController {
+    /** Bind all #ui controls: file inputs, sliders, view toggles, tabs, and panel collapse. */
     public bindEvents() {
         this.bindFileInputs();
         this.bindParameterSliders();

@@ -15,6 +15,7 @@ export class ComparisonManager {
     private reflectionViewer!: Reflection3DViewer;
     private sideBySideViewer!: SideBySide3DViewer;
 
+    /** Construct the manager; immediately builds all diagrams and 3D viewers. */
     constructor() {
         this.init();
     }

@@ -18,6 +18,7 @@ import { card, slider, statusBox, diagramCanvas, CardSpec } from "./markup";
 export class ComparisonTab {
     private manager: ComparisonManager | null = null;
 
+    /** Inject the tab markup, typeset the maths, and build the diagrams/viewers once visible. */
     constructor() {
         const container = document.getElementById("comparison-container");
         if (!container) {
@@ -48,6 +49,7 @@ export class ComparisonTab {
         this.manager = new ComparisonManager();
     }
 
+    /** Forward a resize to the diagrams/viewers so their canvases re-measure. */
     public handleResize() {
         this.manager?.handleResize();
     }
@@ -89,6 +91,7 @@ export class ComparisonTab {
         </div>`;
     }
 
+    /** Build the tab header: title, subtitle, and the colour legend. */
     private header(): string {
         const chip = (color: string, label: string) =>
             `<span class="legend-chip"><span class="legend-dot" style="background:var(${color})"></span>${label}</span>`;

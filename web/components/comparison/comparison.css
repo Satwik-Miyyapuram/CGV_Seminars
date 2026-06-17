@@ -144,7 +144,7 @@ details.math[open] > summary::before { content: '▾  '; }
 }
 
 /* Per-visual canvas heights */
-#ray-canvas { height: 250px; }
+#ray-canvas { height: 280px; }
 #tile-canvas { height: 380px; }
 #leaking-canvas { height: 190px; }
 #reflection-container { height: 240px; }

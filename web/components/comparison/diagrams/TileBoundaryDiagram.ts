@@ -17,6 +17,8 @@
  * accumulate (and flicker as the camera moves) into the popping artifacts described in the paper.
  */
 
+import { Canvas2DDiagram } from "./Canvas2DDiagram";
+
 interface Blob {
     x: number;
     y: number;
@@ -34,9 +36,7 @@ interface Scene {
     seam: boolean;
 }
 
-export class TileBoundaryDiagram {
-    private canvas: HTMLCanvasElement;
-    private ctx: CanvasRenderingContext2D;
+export class TileBoundaryDiagram extends Canvas2DDiagram {
     private slider: HTMLInputElement | null;
     private sliderLabel: HTMLElement | null;
     private status: HTMLElement | null;
@@ -59,9 +59,9 @@ export class TileBoundaryDiagram {
     // glow can spill past the border while the neighbour tile still skips it.
     private readonly CORE = 0.45;
 
+    /** Bind the blob-position slider and draw the initial diagram. */
     constructor() {
-        this.canvas = document.getElementById("tile-canvas") as HTMLCanvasElement;
-        this.ctx = this.canvas.getContext("2d")!;
+        super("tile-canvas");
         this.slider = document.getElementById("tileSplatSlider") as HTMLInputElement | null;
         this.sliderLabel = document.getElementById("tileSplatValue");
         this.status = document.getElementById("tileStatus");
@@ -70,14 +70,6 @@ export class TileBoundaryDiagram {
 
         this.resize();
         this.draw();
-    }
-
-    public resize() {
-        const dpr = window.devicePixelRatio || 1;
-        const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
     }
 
     /** Soft Gaussian weight of a blob at a screen pixel (used to render the result bars). */
@@ -116,6 +108,7 @@ export class TileBoundaryDiagram {
         return { xL, xR, boundary, tileW, A, B, memb0, memb1, seam };
     }
 
+    /** Redraw both rows: 3DGS tiled (with a seam when a tile drops B) and seamless GES. */
     public draw() {
         const W = this.canvas.width / (window.devicePixelRatio || 1);
         const ctx = this.ctx;

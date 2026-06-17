@@ -3,14 +3,25 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 
 /**
+ * GLSL that replaces the stock splat opacity for surfels: a flat opaque disc — constant
+ * opacity inside the ~3.33σ boundary, discarded outside it (GES Eq. 6-7).
+ */
+const SURFEL_OPACITY_GLSL = `float g = exp(-0.5 * A);
+                if (g < 1.0 / 255.0) discard;
+                float val = 255.0 * vColor.a * g;
+                float opacity = min(0.99, val);
+                if (opacity < 1.0/255.0) discard;`;
+
+/**
  * The GES Web Viewer. Surfels and gaussians are loaded as one shared scene and drawn together
  * with a real z-buffer: the opaque surfels write depth (render first) so the hardware occludes
- * gaussians behind them — no custom two-pass. Driven entirely by the glassmorphic #ui panel:
+ * gaussians behind them — no custom two-pass. Driven entirely by the glassmorphic #ui panel via
+ * window events:
  *   - `sceneSplit`        → (re)load a scene (dispatched by the file input + autoloader)
  *   - `viewerMode`        → show surfels / gaussians (the Show Surfels/Gaussians checkboxes)
  *   - `viewerBackground`  → background colour (from config.json)
  */
-class CombinedViewerApp {
+export class GesViewer {
     private container: HTMLElement;
 
     private scene!: THREE.Scene;
@@ -28,6 +39,7 @@ class CombinedViewerApp {
     private sceneRadius = 4;
     private zoomMinDist = 0.1; // closest approach to the pivot + zoom speed floor
 
+    /** Bind the #ui window events; the Three.js scene is created lazily on first load. */
     constructor() {
         this.container = document.getElementById('viewer') as HTMLElement;
         if (!this.container) return;
@@ -128,13 +140,14 @@ class CombinedViewerApp {
     /**
      * Configure a DropInViewer's splat material. Opaque surfels write depth and render first so
      * they occlude gaussians behind them; gaussians depth-test but don't write (no popping).
+     * Retries on the next frame until the splat mesh exists.
      */
     private configureMaterial(dropInViewer: any, isSurfel: boolean, retries = 30) {
         const material = dropInViewer.viewer?.splatMesh?.material;
         const mesh = dropInViewer.viewer?.splatMesh;
         if (!material) {
             if (retries > 0) requestAnimationFrame(() => this.configureMaterial(dropInViewer, isSurfel, retries - 1));
-            else console.warn('[Viewer] Could not access splatMesh.material after retries');
+            else console.warn('[GesViewer] Could not access splatMesh.material after retries');
             return;
         }
 
@@ -144,15 +157,11 @@ class CombinedViewerApp {
 
         if (isSurfel) {
             material.onBeforeCompile = (shader: any) => {
-                // GES opaque flat-disc surfel: constant opacity inside the 3.33σ boundary.
                 shader.fragmentShader = shader.fragmentShader.replace(
                     /float\s+opacity\s*=\s*exp\(\s*-0\.5\s*\*\s*A\s*\)\s*\*\s*vColor\.a\s*;/g,
-                    `float g = exp(-0.5 * A);
-                    if (g < 1.0 / 255.0) discard;
-                    float val = 255.0 * vColor.a * g;
-                    float opacity = min(0.99, val);
-                    if (opacity < 0.002) discard;`
+                    SURFEL_OPACITY_GLSL
                 );
+                // Output premultiplied colour to match the depth-write blending.
                 shader.fragmentShader = shader.fragmentShader.replace(
                     /gl_FragColor\s*=\s*vec4\s*\(\s*color\.rgb\s*,\s*opacity\s*\)\s*;/g,
                     `gl_FragColor = vec4(color.rgb * opacity, opacity);`
@@ -162,6 +171,7 @@ class CombinedViewerApp {
         material.needsUpdate = true;
     }
 
+    /** Start the render loop (idempotent). */
     private startAnimation() {
         if (this.isAnimating) return;
         this.isAnimating = true;
@@ -174,11 +184,13 @@ class CombinedViewerApp {
         animate();
     }
 
+    /** Remove the current surfel/gaussian splat viewers from the scene. */
     private unloadScenes() {
         if (this.surfelDropIn) { this.scene.remove(this.surfelDropIn); this.surfelDropIn = null; }
         if (this.gaussianDropIn) { this.scene.remove(this.gaussianDropIn); this.gaussianDropIn = null; }
     }
 
+    /** (Re)load surfel and gaussian PLYs (object URLs) into the shared scene and frame them. */
     public async loadScenes(surfelUrl: string | null, gaussianUrl: string | null) {
         if (!surfelUrl && !gaussianUrl) return;
         if (!this.initialized) {
@@ -202,22 +214,19 @@ class CombinedViewerApp {
 
         this.frameCamera();
         this.applyModeFromDOM();
-        console.log('[Viewer] Scene loaded.');
+        console.log('[GesViewer] Scene loaded.');
     }
 
+    /** Toggle visibility of the surfel and gaussian layers. */
     private setMode(showSurfels: boolean, showGaussians: boolean) {
         if (this.surfelDropIn) this.surfelDropIn.visible = showSurfels;
         if (this.gaussianDropIn) this.gaussianDropIn.visible = showGaussians;
     }
 
-    /** Sync visibility to the current #ui checkbox state. */
+    /** Sync layer visibility to the current #ui checkbox state. */
     private applyModeFromDOM() {
         const s = document.getElementById('toggleSurfels') as HTMLInputElement | null;
         const g = document.getElementById('toggleGaussians') as HTMLInputElement | null;
         this.setMode(s ? s.checked : true, g ? g.checked : true);
     }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    new CombinedViewerApp();
-});

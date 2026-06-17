@@ -15,6 +15,7 @@ export class Reflection3DViewer {
     private camera: THREE.PerspectiveCamera;
     private controls: OrbitControls;
 
+    /** Build the split-screen renderer and the 3DGS/GES scenes, then start the loop. */
     constructor() {
         this.container = document.getElementById("reflection-container") as HTMLElement;
         if (!this.container) return;
@@ -144,6 +145,7 @@ export class Reflection3DViewer {
         });
     }
 
+    /** Render loop: update billboards + controls and draw the 3DGS|GES split viewports. */
     private animate() {
         requestAnimationFrame(this.animate);
         this.controls.update();

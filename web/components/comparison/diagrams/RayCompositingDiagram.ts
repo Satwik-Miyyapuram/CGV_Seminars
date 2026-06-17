@@ -1,41 +1,29 @@
 import { gaussWeight, orthoProject, SPLATS, CENTER_X, CENTER_Z, SCALE_Z } from "../shared";
+import { Canvas2DDiagram } from "./Canvas2DDiagram";
 
 /**
  * RayCompositingDiagram visualizes camera orbiting and ray projection.
  * Shows the difference between tile-based sorted alpha blending in 3DGS
  * (which causes popping due to sorting key changes) and additive commutative blending in GES.
  */
-export class RayCompositingDiagram {
-    private canvas: HTMLCanvasElement;
-    private ctx: CanvasRenderingContext2D;
+export class RayCompositingDiagram extends Canvas2DDiagram {
     private orderSlider: HTMLInputElement;
     private orderValue: HTMLElement;
 
+    /** Bind the orbit slider and draw the initial diagram. */
     constructor() {
-        this.canvas = document.getElementById("ray-canvas") as HTMLCanvasElement;
-        this.ctx = this.canvas.getContext("2d")!;
+        super("ray-canvas");
         this.orderSlider = document.getElementById("orderSlider") as HTMLInputElement;
         this.orderValue = document.getElementById("orderValue")!;
-        
+
         // Listen to slider movements to redraw the diagram
         this.orderSlider.addEventListener("input", () => {
             this.orderValue.textContent = `${this.orderSlider.value}°`;
             this.draw();
         });
-        
+
         this.resize();
         this.draw();
-    }
-
-    /**
-     * Resize canvas with respect to Device Pixel Ratio (DPR) to avoid blurriness.
-     */
-    public resize() {
-        const dpr = window.devicePixelRatio || 1;
-        const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
     }
 
     /**
@@ -65,7 +53,7 @@ export class RayCompositingDiagram {
         });
 
         // 1. TOP VIEW: Centered Top-Down Camera Orbit
-        const topY = 55;
+        const topY = 70;
         ctx.save();
         ctx.translate(halfW, topY);
         
@@ -108,12 +96,11 @@ export class RayCompositingDiagram {
 
         ctx.fillStyle = "#888";
         ctx.font = "9px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText("INTERMEDIATE: Top-Down Orbit View", halfW, 12);
         ctx.textAlign = "left";
+        ctx.fillText("INTERMEDIATE: Top-Down Orbit View", 15, 12);
 
         // 2. MIDDLE VIEW: Divider + Labels
-        const midY = 115;
+        const midY = 130;
         
         // Horizontal separation line
         ctx.strokeStyle = "rgba(255,255,255,0.08)";

@@ -40,6 +40,7 @@ const KIND_CLASS: Record<FlowTag["kind"], string> = {
     out: "t-out",
 };
 
+/** Render a single coloured input/intermediate/output chip. */
 function flowTag(t: FlowTag): string {
     return `<span class="viz-tag ${KIND_CLASS[t.kind]}"><span class="k">${t.label}</span> ${t.value}</span>`;
 }

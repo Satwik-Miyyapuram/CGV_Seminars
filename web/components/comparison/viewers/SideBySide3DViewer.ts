@@ -35,6 +35,7 @@ export class SideBySide3DViewer {
     private _occDir = new THREE.Vector3();
     private _occQ = new THREE.Quaternion();
 
+    /** Build the two synchronized 3DGS/GES viewports and start the render loop. */
     constructor() {
         this.init3DGS();
         this.initGES();

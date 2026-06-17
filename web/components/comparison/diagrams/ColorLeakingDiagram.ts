@@ -1,39 +1,28 @@
+import { Canvas2DDiagram } from "./Canvas2DDiagram";
+
 /**
  * ColorLeakingDiagram visualizes color leaking behavior.
  * Compares SortFreeGS (which always leaks background elements) with GES,
  * demonstrating how GES uses the delta (δ) threshold to cull occluded Gaussians.
  */
-export class ColorLeakingDiagram {
-    private canvas: HTMLCanvasElement;
-    private ctx: CanvasRenderingContext2D;
+export class ColorLeakingDiagram extends Canvas2DDiagram {
     private deltaSlider: HTMLInputElement;
     private deltaValue: HTMLElement;
 
+    /** Bind the δ slider and draw the initial leak comparison. */
     constructor() {
-        this.canvas = document.getElementById("leaking-canvas") as HTMLCanvasElement;
-        this.ctx = this.canvas.getContext("2d")!;
+        super("leaking-canvas");
         this.deltaSlider = document.getElementById("compDeltaSlider") as HTMLInputElement;
         this.deltaValue = document.getElementById("compDeltaValue")!;
-        
+
         // Redraw on threshold delta slider updates
         this.deltaSlider.addEventListener("input", () => {
             this.deltaValue.textContent = parseFloat(this.deltaSlider.value).toFixed(1);
             this.draw();
         });
-        
+
         this.resize();
         this.draw();
-    }
-
-    /**
-     * Resize canvas keeping device pixel ratio.
-     */
-    public resize() {
-        const dpr = window.devicePixelRatio || 1;
-        const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
     }
 
     /**
