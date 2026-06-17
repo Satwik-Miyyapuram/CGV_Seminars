@@ -20,6 +20,7 @@ from training_schedule import (
 if TYPE_CHECKING:
     from ges_model import GESModel
 
+
 @dataclass
 class GESStrategy(Strategy):
     """GES strategy for the GS densification.
@@ -36,13 +37,11 @@ class GESStrategy(Strategy):
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
-    prune_scale3d: float = 0.05
-    prune_scale2d: float = 0.1
+    prune_scale3d: float = 0.1
+    prune_scale2d: float = 0.15
     refine_start_iter: int = 500
     refine_stop_iter: int = VISIBILITY_PRUNE_STEP
-    refine_stop_iter_gaussian: int = (
-        30000
-    )
+    refine_stop_iter_gaussian: int = 30000
     reset_every: int = 3000
     refine_every: int = 100
     verbose: bool = False
@@ -207,6 +206,7 @@ class GESStrategy(Strategy):
         mutated = False
         if step >= self.refine_start_iter and step % self.refine_every == 0:
             if is_surfel_phase:
+                original_num = len(params["means"])
                 max_num = getattr(model.config, "max_num_surfels", -1)
                 num_duplicates, n_split = self._grow_gs(
                     params, optimizers, state, step, is_surfel_phase, max_num
@@ -217,7 +217,9 @@ class GESStrategy(Strategy):
                         f"Step {step}: {num_duplicates} {target_type} duplicated, {n_split} {target_type} split. "
                         f"Now having {len(params['means'])} {target_type}."
                     )
-                num_prune = self._prune_gs(params, optimizers, state, step, is_surfel_phase)
+                num_prune = self._prune_gs(
+                    params, optimizers, state, step, is_surfel_phase, original_num=original_num
+                )
                 if self.verbose or is_surfel_phase:
                     print(
                         f"Step {step}: {num_prune} {target_type} pruned. "
@@ -364,6 +366,7 @@ class GESStrategy(Strategy):
         state: dict[str, Any],
         step: int,
         is_surfel: bool = False,
+        original_num: int = -1,
     ):
         """Prune primitives that are too transparent or too large (surfels use 2D scale/radius checks)."""
         prune_opa_thresh = self.prune_opa if is_surfel else 0.01
@@ -389,6 +392,8 @@ class GESStrategy(Strategy):
             if state["radii"] is not None:
                 is_too_big_2d = state["radii"] > self.prune_scale2d
                 is_prune = is_prune | is_too_big_2d
+        if original_num > 0:
+            is_prune[original_num:] = False
         num_prune = is_prune.sum().item()
         if step >= 500:
             with open("debug_strategy.txt", "a") as f:
@@ -661,9 +666,7 @@ class GESStrategy(Strategy):
             "means": saved_gaussian_seeds.clone(),
             "quats": quats,
             "scales": scales,
-            "opacities": torch.logit(
-                0.1 * torch.ones((num_new_gaussians, 1), device=device)
-            ),
+            "opacities": torch.logit(0.1 * torch.ones((num_new_gaussians, 1), device=device)),
             "features_dc": features_dc,
             "features_rest": features_rest,
         }
@@ -985,9 +988,7 @@ class GESStrategy(Strategy):
 
                 x_norm = (x_screen / width) * 2.0 - 1.0
                 y_norm = (y_screen / height) * 2.0 - 1.0
-                grid = (
-                    torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)
-                )
+                grid = torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)
 
                 surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2)
                 gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2)
