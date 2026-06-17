@@ -7,7 +7,7 @@ import torch
 from gsplat.strategy.base import Strategy
 from gsplat.strategy.ops import _update_param_with_optimizer, duplicate, remove, reset_opa, split
 from nerfstudio.utils.math import k_nearest_sklearn
-from nerfstudio.utils.spherical_harmonics import RGB2SH, num_sh_bases
+from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
 from torch.nn import Parameter
 
 from training_schedule import (
@@ -1009,3 +1009,169 @@ class GESStrategy(Strategy):
             model.gaussian_max_contribution_score = model.gaussian_max_contribution_score[keep_mask]
 
         print(f"Pruned redundant Gaussians. Now having {model.gaussian.means.shape[0]} Gaussians.")
+
+    def error_spawn_and_prune(self, model, step: int) -> None:
+        """Post-20k joint optimization, run every iteration as a training callback (like the
+        surfel densification callback). Each step it (1) accumulates error-map spawn seeds by
+        unprojecting high-error pixels through the surfel depth, and (2) updates each Gaussian's
+        running max contribution score. Every 1000 steps it prunes low-contribution Gaussians,
+        spawns new ones from the accumulated seeds, and resets the score buffer.
+
+        The render data it needs (outputs / gt_img / pred_img) is stashed on the model during
+        get_loss_dict, since a training callback doesn't receive it directly.
+        """
+        if not (20000 < step <= 30000):
+            return
+        outputs = getattr(model, "_spawn_outputs", None)
+        gt_img = getattr(model, "_spawn_gt_img", None)
+        pred_img = getattr(model, "_spawn_pred_img", None)
+        if outputs is None or gt_img is None or pred_img is None:
+            return
+
+        with torch.no_grad():
+            device = model.device
+            height, width = gt_img.shape[:2]
+
+            # 1. Error-based Spawning: Accumulate high-error points
+            error_map = torch.mean((gt_img.detach() - pred_img.detach()) ** 2, dim=-1)  # [H, W]
+            probs = error_map.flatten() / (error_map.sum() + 1e-8)
+
+            # Sample N = 100 points
+            N = 100
+            sampled_indices = torch.multinomial(probs, num_samples=N, replacement=True)
+            u = sampled_indices % width
+            v = sampled_indices // width
+
+            surfel_depth = outputs.get("surfel_depth")
+            if surfel_depth is not None:
+                # Extract depth
+                z = surfel_depth.squeeze(0)[v, u, 0]  # [N]
+                valid_mask = z < 9.0  # depth < 9.0 are valid surfel surfaces
+
+                if valid_mask.sum() > 0:
+                    u_v = u[valid_mask]
+                    v_v = v[valid_mask]
+                    z_v = z[valid_mask]
+
+                    intrinsic_mat = outputs["intrinsic_mat"]
+                    fx, fy = intrinsic_mat[0, 0, 0], intrinsic_mat[0, 1, 1]
+                    cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
+
+                    # Unproject to camera space
+                    x_cam = (u_v - cx) * z_v / fx
+                    y_cam = (v_v - cy) * z_v / fy
+                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1)  # [M, 3]
+
+                    # Transform to world space
+                    c2w = outputs["camera_to_world"]
+                    R = c2w[0, :3, :3]
+                    T = c2w[0, :3, 3]
+                    pos_world = torch.matmul(pos_cam, R.T) + T  # [M, 3]
+
+                    # Retrieve ground truth color
+                    color = gt_img[v_v, u_v]  # [M, 3]
+
+                    model.error_spawn_points.append(pos_world.cpu())
+                    model.error_spawn_colors.append(color.cpu())
+
+            # 2. Score-based Pruning: Update maximum contribution scores
+            gaussian_alpha = outputs.get("gaussian_alpha")
+            surfel_alpha = outputs.get("surfel_alpha")
+            x_screen = outputs.get("x_screen")
+            y_screen = outputs.get("y_screen")
+
+            if (
+                model.gaussian.means.shape[0] > 0
+                and gaussian_alpha is not None
+                and surfel_alpha is not None
+                and x_screen is not None
+                and y_screen is not None
+            ):
+                num_gaussians = model.gaussian.means.shape[0]
+
+                # Verify max contribution score buffer size
+                if model.gaussian_max_contribution_score.shape[0] != num_gaussians:
+                    model.gaussian_max_contribution_score = torch.zeros(
+                        num_gaussians, device=device
+                    )
+
+                # Convert log-features to base RGB color
+                c_rgb = torch.clamp(SH2RGB(model.gaussian.features_dc.detach()), 0.0, 1.0)
+                c_i = c_rgb.max(dim=-1).values  # [N]
+                alpha_i = torch.sigmoid(model.gaussian.opacities.detach()).flatten()  # [N]
+
+                # Sample W_S and W_G at Gaussian center
+                x_norm = (x_screen / width) * 2.0 - 1.0
+                y_norm = (y_screen / height) * 2.0 - 1.0
+                grid = (
+                    torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0).unsqueeze(0)
+                )  # [1, 1, N, 2]
+
+                # surfel_alpha permuted for grid_sample
+                surfel_alpha_map = surfel_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
+                gaussian_alpha_map = gaussian_alpha.permute(0, 3, 1, 2)  # [1, 1, H, W]
+
+                sampled_W_S = torch.nn.functional.grid_sample(
+                    surfel_alpha_map,
+                    grid,
+                    mode="nearest",
+                    padding_mode="border",
+                    align_corners=False,
+                ).flatten()  # [N]
+                sampled_W_G = torch.nn.functional.grid_sample(
+                    gaussian_alpha_map,
+                    grid,
+                    mode="nearest",
+                    padding_mode="border",
+                    align_corners=False,
+                ).flatten()  # [N]
+
+                # Compute contribution score
+                score = (c_i * alpha_i) / (sampled_W_S + sampled_W_G + 1e-5)  # [N]
+
+                # Update running maximum score
+                model.gaussian_max_contribution_score = torch.maximum(
+                    model.gaussian_max_contribution_score, score
+                )
+
+            # 3. Periodic Spawning and Pruning Callback (Every 1000 steps)
+            if step > 20000 and step % 1000 == 0:
+                print(
+                    f"[Joint Optimization] Periodic step {step} unprojected spawning and contribution pruning..."
+                )
+
+                # 3a. Execute Pruning FIRST based on contribution score < 0.02
+                # (Must happen before spawning, otherwise newly spawned Gaussians
+                # with score=0 get immediately pruned.)
+                if model.gaussian.means.shape[0] > 0:
+                    num_gaussians = model.gaussian.means.shape[0]
+                    if model.gaussian_max_contribution_score.shape[0] == num_gaussians:
+                        keep_mask = model.gaussian_max_contribution_score >= 0.02
+                        num_prune = (~keep_mask).sum().item()
+                        if num_prune > 0:
+                            print(
+                                f"[Contribution Pruning] Pruning {num_prune} Gaussians with contribution score < 0.02."
+                            )
+                            self.execute_contribution_pruning(model, keep_mask)
+
+                # 3b. Execute Spawning (after pruning, so new Gaussians aren't killed)
+                if len(model.error_spawn_points) > 0:
+                    spawn_pts = torch.cat(model.error_spawn_points, dim=0).to(device)
+                    spawn_cols = torch.cat(model.error_spawn_colors, dim=0).to(device)
+
+                    self.spawn_gaussians_from_error_seeds(model, spawn_pts, spawn_cols)
+
+                    # Clear lists
+                    model.error_spawn_points = []
+                    model.error_spawn_colors = []
+
+                # 3c. Reset contribution score buffer for the next 1000-step cycle
+                if model.gaussian.means.shape[0] > 0:
+                    model.gaussian_max_contribution_score = torch.zeros(
+                        model.gaussian.means.shape[0], device=device
+                    )
+                    state = model.strategy_state["gaussians"]
+                    if "gaussian_max_contribution_score" in state:
+                        state["gaussian_max_contribution_score"] = (
+                            model.gaussian_max_contribution_score.clone()
+                        )
