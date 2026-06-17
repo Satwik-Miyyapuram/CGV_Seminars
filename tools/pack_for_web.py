@@ -53,6 +53,12 @@ def _extract_arrays(tensor_dict, sh_degree):
         opacities = opacities[finite]
         features_dc = features_dc[finite]
         features_rest = features_rest[finite]
+    print("opacity stats after dropping non-finite: ")
+    print(
+        f"  Opacity stats (raw logits): min {opacities.min():.3f}, "
+        f"max {opacities.max():.3f}, "
+        f"mean {opacities.mean():.3f}"
+    )
 
     return means, scales, quats, opacities, features_dc, features_rest
 
@@ -89,8 +95,18 @@ def _build_dtype(num_rest, include_prim_type):
     return dtype
 
 
-def _fill_elements(elements, start, means, scales, quats, opacities, features_dc, features_rest,
-                   num_rest, prim_type=None):
+def _fill_elements(
+    elements,
+    start,
+    means,
+    scales,
+    quats,
+    opacities,
+    features_dc,
+    features_rest,
+    num_rest,
+    prim_type=None,
+):
     """Fill rows [start:start+N] of a pre-allocated structured array."""
     num_pts = means.shape[0]
     sl = slice(start, start + num_pts)
@@ -107,13 +123,43 @@ def _fill_elements(elements, start, means, scales, quats, opacities, features_dc
         else:
             elements[f"f_rest_{i}"][sl] = 0.0
 
-    # Store RAW (logit) opacity. The standard 3DGS PLY convention — and the
-    # @mkkellogg/gaussian-splats-3d loader the web viewer uses — applies sigmoid
-    # on load, so writing sigmoid here would double-apply it and wash everything
-    # toward 0.5 (translucent fog).
+    # Store RAW (logit) opacity.
+    # The standard 3DGS PLY convention applies sigmoid on load.
+    # The GES paper defines Surfel Alpha as: min(0.99, 255 * sigmoid(raw_opacity) * exp(-0.5*A))
+    # To pass `255 * sigmoid(raw_opacity)` to the web viewer through mkkellogg's sigmoid loader,
+    # we compute the desired post-sigmoid opacity, cap it at 0.9999, and inverse-sigmoid (logit) it!
+    if prim_type == 1:
+        # 1. Compute original sigmoid opacity
+        sig_opac = 1.0 / (1.0 + np.exp(-opacities))
+        # 2. Apply GES 255x multiplier
+        sig_opac = sig_opac * 255.0
+        # 3. Cap it slightly below 1.0 to prevent inf logits
+        sig_opac = np.clip(sig_opac, 1e-6, 0.9999)
+        # 4. Inverse sigmoid (logit) it so mkkellogg's loader reproduces this value exactly
+        opacities = np.log(sig_opac / (1.0 - sig_opac))
+
     elements["opacity"][sl] = opacities.squeeze()
-    elements["scale_0"][sl], elements["scale_1"][sl], elements["scale_2"][sl] = scales.T
-    elements["rot_0"][sl], elements["rot_1"][sl], elements["rot_2"][sl], elements["rot_3"][sl] = quats.T
+    print(
+        f"  Opacity stats (raw logits): min {elements['opacity'][sl].min():.3f}, "
+        f"max {elements['opacity'][sl].max():.3f}, "
+        f"mean {elements['opacity'][sl].mean():.3f}"
+    )
+
+    # 3DGS web viewers render everything as 3D ellipsoids. For surfels to look
+    # like perfectly flat 2D discs, their local Z-scale must be virtually zero.
+    # The PyTorch 2DGS rasterizer ignores the Z-scale internally, but the web
+    # viewer reads it from the PLY. We force the Z-scale to log(1e-7) ≈ -16.0 here.
+    scale_0, scale_1, scale_2 = scales.T
+    if prim_type == 1:  # PRIM_TYPE_SURFEL
+        scale_2 = -16.0 * np.ones_like(scale_2)
+    elements["scale_0"][sl], elements["scale_1"][sl], elements["scale_2"][sl] = (
+        scale_0,
+        scale_1,
+        scale_2,
+    )
+    elements["rot_0"][sl], elements["rot_1"][sl], elements["rot_2"][sl], elements["rot_3"][sl] = (
+        quats.T
+    )
 
     if prim_type is not None:
         elements["prim_type"][sl] = prim_type
@@ -132,7 +178,9 @@ def export_to_ply(tensor_dict, filename, sh_degree=3):
     num_pts = means.shape[0]
 
     elements = np.empty(num_pts, dtype=_build_dtype(num_rest, include_prim_type=False))
-    _fill_elements(elements, 0, means, scales, quats, opacities, features_dc, features_rest, num_rest)
+    _fill_elements(
+        elements, 0, means, scales, quats, opacities, features_dc, features_rest, num_rest
+    )
 
     el = PlyElement.describe(elements, "vertex")
     PlyData([el]).write(filename)
@@ -149,7 +197,11 @@ def export_combined_ply(surfels, gaussians, filename, sh_degree=3):
     g_arrays = None
     if surfels is not None and surfels.get("means") is not None and surfels["means"].shape[0] > 0:
         s_arrays = _extract_arrays(surfels, sh_degree)
-    if gaussians is not None and gaussians.get("means") is not None and gaussians["means"].shape[0] > 0:
+    if (
+        gaussians is not None
+        and gaussians.get("means") is not None
+        and gaussians["means"].shape[0] > 0
+    ):
         g_arrays = _extract_arrays(gaussians, sh_degree)
 
     if s_arrays is None and g_arrays is None:
@@ -264,14 +316,42 @@ def extract_primitives(state, prefix, name):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Pack GES checkpoints (.ckpt or .pth) for web viewer")
-    parser.add_argument("--checkpoint", "-c", type=str, default=CHECKPOINT_PATH, help="Path to the checkpoint file (.ckpt or .pth)")
+
+    parser = argparse.ArgumentParser(
+        description="Pack GES checkpoints (.ckpt or .pth) for web viewer"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        type=str,
+        default=CHECKPOINT_PATH,
+        help="Path to the checkpoint file (.ckpt or .pth)",
+    )
     parser.add_argument("--out-dir", "-o", type=str, default=str(OUT_DIR), help="Output directory")
-    parser.add_argument("--out-name", type=str, default="scene.ply", help="Combined output PLY filename")
-    parser.add_argument("--max-surfels", type=int, default=None, help="Restrict the number of surfels to this count")
-    parser.add_argument("--max-gaussians", type=int, default=None, help="Restrict the number of gaussians to this count")
-    parser.add_argument("--sh-degree", type=int, default=3, choices=[0, 3], help="Spherical harmonics degree to export (0 or 3, default: 3)")
-    parser.add_argument("--separate", action="store_true", help="Also write legacy surfels.ply / gaussians.ply alongside the combined scene.ply")
+    parser.add_argument(
+        "--out-name", type=str, default="scene.ply", help="Combined output PLY filename"
+    )
+    parser.add_argument(
+        "--max-surfels", type=int, default=None, help="Restrict the number of surfels to this count"
+    )
+    parser.add_argument(
+        "--max-gaussians",
+        type=int,
+        default=None,
+        help="Restrict the number of gaussians to this count",
+    )
+    parser.add_argument(
+        "--sh-degree",
+        type=int,
+        default=3,
+        choices=[0, 3],
+        help="Spherical harmonics degree to export (0 or 3, default: 3)",
+    )
+    parser.add_argument(
+        "--separate",
+        action="store_true",
+        help="Also write legacy surfels.ply / gaussians.ply alongside the combined scene.ply",
+    )
     args = parser.parse_args()
 
     checkpoint_path = args.checkpoint
