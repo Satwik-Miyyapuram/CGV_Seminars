@@ -449,6 +449,9 @@ class GESStrategy(Strategy):
         state = model.strategy_state["surfels"]
         if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
             state["surfel_radii_cache"] = state["surfel_radii_cache"][keep_mask]
+        for key in ["grad2d", "count", "radii"]:
+            if state[key] is not None:
+                state[key] = state[key][keep_mask]
 
         print(
             f"Discarded surfels based on the keep_mask at iteration {model.step}. \
@@ -527,6 +530,9 @@ class GESStrategy(Strategy):
         state = model.strategy_state["surfels"]
         if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
             state["surfel_radii_cache"] = state["surfel_radii_cache"][visibility_mask]
+        for key in ["grad2d", "count", "radii"]:
+            if state[key] is not None:
+                state[key] = state[key][visibility_mask]
 
         print(
             f"Pruned surfels based on visibility at iteration {model.step}. Now having \
@@ -901,6 +907,11 @@ class GESStrategy(Strategy):
         ]
 
         self._clean_optimizer_states(model)
+
+        state = model.strategy_state["gaussians"]
+        for key in ["grad2d", "count", "radii"]:
+            if state[key] is not None:
+                state[key] = state[key][keep_mask]
 
         if hasattr(model, "gaussian_max_contribution_score"):
             model.gaussian_max_contribution_score = model.gaussian_max_contribution_score[keep_mask]
