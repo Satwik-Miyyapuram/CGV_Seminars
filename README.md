@@ -5,7 +5,7 @@ An interactive, browser-based educational web visualizer and offline processing 
 This project is part of a Computer Graphics and Visualization (CGV) seminar and follows a **"Compute Offline, Replay Online"** architecture. It splits the workload into:
 
 1. **Offline Training & Preprocessing (Python/PyTorch):** Joint surfel-Gaussian optimization built on top of Nerfstudio, checkpoint dumping, and custom preprocessing tools to package optimized/quantized scenes.
-2. **Online Interactive Visualizer (TypeScript/Three.js/GLSL):** A high-performance web-based visualization tool that renders surfels and Gaussians using custom GLSL shaders (implementing the two-pass, sorting-free compositing equations) and includes dynamic interactive diagrams demonstrating key paper concepts.
+2. **Online Interactive Visualizer (TypeScript/Three.js/GLSL):** A web-based tool that renders surfels and Gaussians from a single combined `scene.ply`. A custom GLSL shader draws surfels as flat opaque discs that write depth, so the hardware z-buffer occludes the Gaussians behind them — a real-time take on the paper's *surfel-first* occlusion. A separate **Artifact Comparison** tab then uses interactive 2D/3D diagrams to demonstrate the full sorting-free compositing, tile-seam, depth-offset ($\delta$), and specular-limitation concepts.
 
 ---
 
@@ -77,8 +77,9 @@ Unzip your dataset inside the root directory. For blender/synthetic datasets, en
 `nerf_synthetic/chair/transforms_train.json`
 
 ### 4. Run Training
-> [!CAUTION]
-> <span style="color: red; font-weight: bold;">A CUDA-compatible GPU is strictly required for training.</span> The optimization kernels (such as gsplat and custom nerfstudio modules) rely on CUDA and **will not run on CPU**.
+
+> <span style="color: red; font-weight: bold;"> [!CAUTION]
+> A CUDA-compatible GPU is strictly required for training.</span> The optimization kernels (such as gsplat and custom nerfstudio modules) rely on CUDA and **will not run on CPU**.
 
 To run optimization on the synthetic "Chair" dataset:
 
@@ -126,6 +127,9 @@ npm run dev
 
 Open the provided localhost address (typically `http://localhost:5173`) in your browser.
 
+> [!NOTE]
+> No large scene is bundled with the repository. The **GES Web Viewer** tab starts empty — click **"Choose scene.ply"** in the control panel to load a scene you exported in step 5 (or any combined GES PLY). The **Artifact Comparison** tab works without any scene.
+
 ### 3. Build for Production
 
 To bundle the web app into a static production build:
@@ -144,8 +148,8 @@ This outputs compiled assets into `web/dist/`, which can be served as a static w
 
 ### 1. GES Web Viewer (Tab 1)
 
-* **Interactive 3D Inspector:** View the combined scene, or isolate **Surfels Only** and **Gaussians Only** to inspect the bi-scale representation.
-* **Dynamic Custom Rendering:** Renders surfel disks and volumetric Gaussians using custom GLSL shaders implementing GES Equations 2-5.
+* **Interactive 3D Inspector:** Load any exported `scene.ply` and toggle **Surfels Only** / **Gaussians Only** / **both** to inspect the bi-scale representation. Blender-style navigation (left-drag orbit, right-drag pan, scroll zoom).
+* **Custom GLSL Rendering:** Surfels are drawn as flat opaque discs (custom shader, Eq. 6-7) that write depth and occlude the Gaussians behind them via the hardware z-buffer — a real-time realization of the paper's surfel-first occlusion. (The full additive Eq. 2-5 compositing is illustrated interactively in Tab 2.)
 
 ### 2. Artifact Comparison (Tab 2)
 
@@ -160,8 +164,53 @@ Provides visual and math-backed proof of how GES addresses 3DGS rendering flaws:
 
 ---
 
-## 📚 References & Paper Information
+## 📦 External Resources
 
-* **Paper:** *When Gaussian Meets Surfel: Ultra-fast High-fidelity Radiance Field Rendering* (ACM TOG 2025)
-* **Authors:** Binbin Ye, Jiahui Shao, and Yuhang Zhou.
-* **Official Codebase:** [https://github.com/YessionCC/GES](https://github.com/YessionCC/GES)
+All graded, custom code lives in `src/`, `tools/`, and `web/`. Everything below is third-party
+and is isolated under `external_code/` (for imported source) or pulled in as a package manager
+dependency. **Nothing in `external_code/` is graded.**
+
+### Imported source code (`external_code/`)
+
+| Resource                                                                                                          | Version | Used for                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Nerfstudio** — [github.com/nerfstudio-project/nerfstudio](https://github.com/nerfstudio-project/nerfstudio) | v1.1.5  | Training framework. Our GES model (`src/ges_model.py`) subclasses its `Splatfacto` model and reuses its trainer, data parsers, and camera pipeline. Cloned + installed editable (see setup).                      |
+| **gsplat** — [github.com/nerfstudio-project/gsplat](https://github.com/nerfstudio-project/gsplat)             | v1.5.3  | Differentiable CUDA rasterizer; backend for both the surfel (2DGS) and Gaussian (3DGS) passes during optimization. Cloned + installed editable.                                                                       |
+| **render** (`external_code/render`)                                                                       | local   | Our custom C++/CUDA surfel-rasterizer extension. It is*our* code but is placed under `external_code/` purely for isolation per the submission rules. due to relatively small num of chanegs to the original code. |
+
+### Python libraries (offline pipeline)
+
+PyTorch + torchvision (autograd/CUDA backend), **pytorch-msssim** (SSIM term in the loss),
+**torchmetrics** (PSNR/LPIPS evaluation), **plyfile** (read/write the exported PLY in
+`tools/pack_for_web.py`), plus NumPy, SciPy, tqdm, and zstandard. See `requirements.txt` /
+`environment.yml`.
+
+### Web libraries (`web/`, via npm — see `web/package.json`)
+
+| Resource                                                                                                                       | Version      | Used for                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------ | ---------------------------------------------------------------------- |
+| **three.js** — [threejs.org](https://threejs.org)                                                                          | ^0.184.0     | WebGL scene graph, camera, and `OrbitControls` for all 3D views.     |
+| **@mkkellogg/gaussian-splats-3d** — [github.com/mkkellogg/GaussianSplats3D](https://github.com/mkkellogg/GaussianSplats3D) | ^0.4.7       | Splat-PLY parsing and `DropInViewer` rendering of surfels/Gaussians. |
+| **Vite** — [vitejs.dev](https://vitejs.dev)                                                                                | ^8.0.13      | Dev server and production bundler.                                     |
+| **KaTeX** — [katex.org](https://katex.org)                                                                                 | 0.16.9 (CDN) | Renders the equations shown in the UI (loaded in `index.html`).      |
+
+### Data
+
+We used the garden dataset from mipnerf
+
+---
+
+## 🤖 AI Assistance
+
+In the interest of transparency:
+
+* The **web UI code and visual design** : the control panel, layout/CSS, and the Artifact-Comparison diagram cards , were produced **largely with AI assistance**. While the underlying logic, algorithms are written by me, couldn't  separate them considering they are very tangled.
+* The **core rendering and algorithm logic** was authored by me: the offline GES training pipeline (surfel/Gaussian optimization, densification/pruning strategy, the custom CUDA surfel rasterizer) and the renderer's shading/depth handling, in both train and the web view.
+* AI assistance was also used to write the **code comments** and to **clean up** the `src/ python code and web/ ts code` .
+
+---
+
+## 📚 Paper & References
+
+* **Paper:** Keyang Ye, Tianjia Shao, Kun Zhou. *When Gaussian Meets Surfel: Ultra-fast High-fidelity Radiance Field Rendering.* ACM TOG 2025.
+* **Authors' reference code:** [https://github.com/YessionCC/GES](https://github.com/YessionCC/GES) — consulted for the algorithm; not vendored into this submission.
