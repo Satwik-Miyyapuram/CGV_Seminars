@@ -41,6 +41,7 @@ from training_schedule import (
     LOSS_GRAPH_STEP,
     MILESTONE_STEPS,
     SURFEL_DENSIFICATION_STOP,
+    SURFEL_DISCARD_ITER,
     SURFEL_PHASE_END,
     VISIBILITY_PRUNE_STEP,
 )
@@ -391,7 +392,7 @@ class GESModel(Model):
 
         def phase_10k_callback(step: int):
             """At 10k: discard low-opacity surfels (saving them as gaussian seeds), then clamp + freeze surfel opacity."""
-            if step == self.strategy.surfel_density_stop_iter:
+            if step == self.strategy.surfel_discard_iter:
                 print(f"Reached {step} iterations, entering discard phase...")
                 opacities = torch.sigmoid(self.surfel.opacities.detach())
 
@@ -645,7 +646,7 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(SURFEL_DENSIFICATION_STOP,),
+                iters=(SURFEL_DISCARD_ITER,),
                 func=phase_10k_callback,
             )
         )

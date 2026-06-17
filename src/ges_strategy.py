@@ -14,6 +14,7 @@ from torch.nn import Parameter
 from training_schedule import (
     GAUSSIAN_SPAWN_STEP,
     SURFEL_DENSIFICATION_STOP,
+    SURFEL_DISCARD_ITER,
     VISIBILITY_PRUNE_STEP,
 )
 
@@ -48,6 +49,7 @@ class GESStrategy(Strategy):
     absgrad: bool = True
 
     surfel_density_stop_iter: int = SURFEL_DENSIFICATION_STOP
+    surfel_discard_iter: int = SURFEL_DISCARD_ITER
     surfel_prune_iter: int = VISIBILITY_PRUNE_STEP
     gaussian_spawn_iter: int = GAUSSIAN_SPAWN_STEP
 
