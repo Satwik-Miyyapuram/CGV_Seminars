@@ -74,7 +74,7 @@ export class ColorLeakingDiagram {
         const w = x1 - x0;
         const midY = H / 2 + 10;
 
-        // Label Intermediate
+        // Input/setup stage label
         ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
         ctx.font = "8px monospace";
         ctx.fillText("INTERMEDIATE: Setup", x0, 34);
@@ -133,7 +133,7 @@ export class ColorLeakingDiagram {
         tmp.getContext("2d")!.putImageData(imgData, 0, 0);
         ctx.drawImage(tmp, x0, midY - 32);
 
-        // Label Output overlaid on the rendered pixels
+        // Output stage label, overlaid on the rendered-pixel band
         ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
         ctx.font = "8px monospace";
         ctx.fillText("OUTPUT: Rendered Pixels", x0 + 5, midY - 20);

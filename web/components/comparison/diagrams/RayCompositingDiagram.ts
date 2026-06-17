@@ -108,7 +108,9 @@ export class RayCompositingDiagram {
 
         ctx.fillStyle = "#888";
         ctx.font = "9px monospace";
-        ctx.fillText("INTERMEDIATE: Top-Down Orbit View", halfW - 80, 12);
+        ctx.textAlign = "center";
+        ctx.fillText("INTERMEDIATE: Top-Down Orbit View", halfW, 12);
+        ctx.textAlign = "left";
 
         // 2. MIDDLE VIEW: Divider + Labels
         const midY = 115;
@@ -144,7 +146,9 @@ export class RayCompositingDiagram {
         ctx.fillText("All splats: additive (order-free)", halfW + 10, midY + 22);
 
         // 3. BOTTOM VIEW: Gaussian Curves & Rendered Color Strips
-        const curveBaseY = midY + 55;
+        // (curveBaseY pushed down so the "INTERMEDIATE" label gets its own line below
+        //  the subtitle instead of colliding with it.)
+        const curveBaseY = midY + 68;
         const curveH = 28;
         const stripY = curveBaseY + 5;
         const stripH = 25;
@@ -168,8 +172,8 @@ export class RayCompositingDiagram {
     ) {
         const w = x1 - x0;
 
-        // Label Intermediate
-        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        // Intermediate stage: the per-blob blending curves (own line below the subtitle).
+        ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
         ctx.font = "8px monospace";
         ctx.fillText("INTERMEDIATE: Blending Curves", x0, baseY - curveH - 6);
 
@@ -260,7 +264,7 @@ export class RayCompositingDiagram {
             ctx.textAlign = "left";
         }
 
-        // Label Output
+        // Output stage: the rendered pixel strip.
         ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
         ctx.font = "8px monospace";
         ctx.fillText("OUTPUT: Rendered Pixels", x0, stripY + stripH + 12);
@@ -278,8 +282,8 @@ export class RayCompositingDiagram {
     ) {
         const w = x1 - x0;
 
-        // Label Intermediate
-        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        // Intermediate stage: the per-blob blending curves (own line below the subtitle).
+        ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
         ctx.font = "8px monospace";
         ctx.fillText("INTERMEDIATE: Blending Curves", x0, baseY - curveH - 6);
 
@@ -346,7 +350,7 @@ export class RayCompositingDiagram {
             ctx.fillRect(px, stripY, 2, stripH);
         }
 
-        // Label Output
+        // Output stage: the rendered pixel strip.
         ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
         ctx.font = "8px monospace";
         ctx.fillText("OUTPUT: Rendered Pixels", x0, stripY + stripH + 12);

@@ -28,6 +28,7 @@ export class ConfigLoader {
         onConfigLoaded: (config: any) => void;
         onSurfelsLoaded: (url: string) => Promise<void>;
         onGaussiansLoaded: (url: string) => Promise<void>;
+        onSceneBounds?: (center: [number, number, number], radius: number) => void;
     }) {
         const autoStatus = document.getElementById('autoLoadStatus');
         if (autoStatus) {
@@ -55,9 +56,10 @@ export class ConfigLoader {
         // 2. Prefer a single combined scene.ply (surfels + gaussians tagged by prim_type).
         let loadedCombined = false;
         try {
-            console.log("[ConfigLoader] Checking for default scene.ply...");
-            const res = await fetch('/web_assets/scene.ply');
-            if (res.ok) {
+            console.log("[ConfigLoader] Checking for default truck_1 scene.ply...");
+            const res = await fetch('/web_assets/truck_1/scene.ply');
+            const contentType = res.headers.get('content-type') || '';
+            if (res.ok && !contentType.includes('text/html')) {
                 const buffer = await res.arrayBuffer();
                 const split = ScenePlyLoader.splitSceneBuffer(buffer);
                 console.log(
@@ -71,6 +73,11 @@ export class ConfigLoader {
                     await callbacks.onGaussiansLoaded(split.gaussianUrl);
                     this.updateFileLabel('gaussianLabel', 'gaussianLoaded', 'scene.ply (gaussians)');
                 }
+                callbacks.onSceneBounds?.(split.center, split.radius);
+                
+                // Dispatch event for Combined Viewer Tab
+                window.dispatchEvent(new CustomEvent('sceneSplit', { detail: split }));
+                
                 loadedCombined = true;
                 loadedCount++;
                 console.log("[ConfigLoader] Auto-loaded scene.ply successfully.");
@@ -84,7 +91,8 @@ export class ConfigLoader {
             try {
                 console.log("[ConfigLoader] Checking for default surfels.ply...");
                 const res = await fetch('/web_assets/surfels.ply');
-                if (res.ok) {
+                const contentType = res.headers.get('content-type') || '';
+                if (res.ok && !contentType.includes('text/html')) {
                     await callbacks.onSurfelsLoaded('/web_assets/surfels.ply');
                     this.updateFileLabel('surfelLabel', 'surfelLoaded', 'surfels.ply');
                     console.log("[ConfigLoader] Auto-loaded surfels.ply successfully.");
@@ -97,7 +105,8 @@ export class ConfigLoader {
             try {
                 console.log("[ConfigLoader] Checking for default gaussians.ply...");
                 const res = await fetch('/web_assets/gaussians.ply');
-                if (res.ok) {
+                const contentType = res.headers.get('content-type') || '';
+                if (res.ok && !contentType.includes('text/html')) {
                     await callbacks.onGaussiansLoaded('/web_assets/gaussians.ply');
                     this.updateFileLabel('gaussianLabel', 'gaussianLoaded', 'gaussians.ply');
                     console.log("[ConfigLoader] Auto-loaded gaussians.ply successfully.");

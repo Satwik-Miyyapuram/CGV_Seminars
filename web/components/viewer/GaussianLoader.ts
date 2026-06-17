@@ -70,20 +70,24 @@ export class GaussianLoader {
         material.depthWrite = false;
         material.transparent = true;
 
-        // Custom additive blending configuration (accumulate color and opacity separately)
+        // Custom blending configuration for standard 3DGS premultiplied alpha accumulation
         material.blending = THREE.CustomBlending;
         material.blendEquation = THREE.AddEquation;
-        material.blendSrc = THREE.SrcAlphaFactor; // Fragment shader outputs unpremultiplied color; GPU multiplies by alpha dynamically
-        material.blendDst = THREE.OneFactor;
+        material.blendSrc = THREE.OneFactor; // We will output premultiplied color
+        material.blendDst = THREE.OneMinusSrcAlphaFactor;
         material.blendSrcAlpha = THREE.OneFactor;
-        material.blendDstAlpha = THREE.OneFactor;
+        material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
 
         // Shader modification hooks
         material.onBeforeCompile = (shader: THREE.Shader) => {
-            // 1. Declare ndcDepth varying in the vertex shader to pass projection depth
+            // Add custom uniform for depth culling delta
+            shader.uniforms.uDepthCullDelta = { value: 0.05 };
+
+            // 1. Declare ndcDepth and uniform in the vertex shader
             shader.vertexShader = shader.vertexShader.replace(
                 /void\s+main\s*\(\s*\)\s*\{/g,
                 `varying float ndcDepth;
+                uniform float uDepthCullDelta;
                 void main() {`
             );
             
@@ -92,7 +96,23 @@ export class GaussianLoader {
             if (lastBraceIndex !== -1) {
                 shader.vertexShader = 
                     shader.vertexShader.substring(0, lastBraceIndex) + 
-                    `    ndcDepth = gl_Position.z / gl_Position.w;
+                    `    
+                    // The standard gl_Position is already computed.
+                    // We calculate a modified z_clip and w_clip using a view-space offset.
+                    // In Three.js, view-space z is negative. Pushing it forward means adding delta.
+                    
+                    // We need the original view-space Z.
+                    // Since gl_Position.w = -viewZ (for perspective projection), viewZ = -gl_Position.w
+                    float viewZ = -gl_Position.w;
+                    float newViewZ = viewZ + uDepthCullDelta; // Closer to camera
+                    
+                    // Project the new viewZ using the projection matrix elements
+                    // projectionMatrix[2][2] corresponds to the Z-scaling
+                    // projectionMatrix[3][2] corresponds to the Z-translation
+                    float newClipZ = projectionMatrix[2][2] * newViewZ + projectionMatrix[3][2];
+                    float newClipW = -newViewZ;
+                    
+                    ndcDepth = newClipZ / newClipW;
                     }` + 
                     shader.vertexShader.substring(lastBraceIndex + 1);
             }
@@ -104,10 +124,10 @@ export class GaussianLoader {
                 varying float ndcDepth;`
             );
             
-            // 4. Output standard unpremultiplied color and write correct 3D depth to gl_FragDepth
+            // 4. Output premultiplied color and write modified 3D depth to gl_FragDepth
             shader.fragmentShader = shader.fragmentShader.replace(
                 /gl_FragColor\s*=\s*vec4\s*\(\s*color\.rgb\s*,\s*opacity\s*\)\s*;/g,
-                `gl_FragColor = vec4(color.rgb, opacity);
+                `gl_FragColor = vec4(color.rgb * opacity, opacity);
                 gl_FragDepth = (ndcDepth + 1.0) / 2.0;`
             );
         };

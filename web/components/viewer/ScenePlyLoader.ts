@@ -35,6 +35,18 @@ export interface SplitScene {
     gaussianUrl: string;
     surfelCount: number;
     gaussianCount: number;
+    /** Robust scene center (mean of positions) — used to frame the camera on load. */
+    center: [number, number, number];
+    /** Robust radius (~2.5 std-dev of positions) ignoring far floaters. */
+    radius: number;
+}
+
+/** One merged PLY (all primitives, prim_type stripped) for the single-object render path. */
+export interface MergedScene {
+    url: string;
+    count: number;
+    center: [number, number, number];
+    radius: number;
 }
 
 export class ScenePlyLoader {
@@ -113,6 +125,13 @@ export class ScenePlyLoader {
         const outProps = properties.filter((p) => p.name !== PRIM_TYPE_FIELD);
         const outStride = stride - primProp.size;
 
+        // Position property offsets, for computing scene bounds while we scan.
+        const xProp = properties.find((p) => p.name === "x");
+        const yProp = properties.find((p) => p.name === "y");
+        const zProp = properties.find((p) => p.name === "z");
+        const view = new DataView(buffer);
+        let sx = 0, sy = 0, sz = 0, sxx = 0, syy = 0, szz = 0;
+
         // --- First pass: count each primitive type ---
         let surfelCount = 0;
         let gaussianCount = 0;
@@ -144,14 +163,119 @@ export class ScenePlyLoader {
                 gaussianBody.set(tail, gCursor + head.length);
                 gCursor += outStride;
             }
+
+            // Accumulate position stats for camera framing.
+            if (xProp && yProp && zProp) {
+                const x = view.getFloat32(base + xProp.offset, true);
+                const y = view.getFloat32(base + yProp.offset, true);
+                const z = view.getFloat32(base + zProp.offset, true);
+                sx += x; sy += y; sz += z;
+                sxx += x * x; syy += y * y; szz += z * z;
+            }
         }
+
+        // Robust center = mean; radius ~ 2.5 * combined std-dev (ignores far floaters
+        // far better than a raw bounding box would).
+        const n = Math.max(vertexCount, 1);
+        const mx = sx / n, my = sy / n, mz = sz / n;
+        const vxx = Math.max(sxx / n - mx * mx, 0);
+        const vyy = Math.max(syy / n - my * my, 0);
+        const vzz = Math.max(szz / n - mz * mz, 0);
+        const radius = 2.5 * Math.sqrt(vxx + vyy + vzz) || 1;
 
         return {
             surfelUrl: surfelCount > 0 ? this.makePlyUrl(outProps, surfelCount, surfelBody) : "",
             gaussianUrl: gaussianCount > 0 ? this.makePlyUrl(outProps, gaussianCount, gaussianBody) : "",
             surfelCount,
             gaussianCount,
+            center: [mx, my, mz],
+            radius,
         };
+    }
+
+    /**
+     * Merge the combined scene into ONE standard 3DGS PLY (all primitives, prim_type
+     * stripped) — for the single-object render path where surfels + gaussians are drawn
+     * together with a shared z-buffer instead of the custom two-pass.
+     */
+    public static async mergedSceneFromUrl(url: string): Promise<MergedScene> {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Failed to fetch scene PLY (${res.status}) from ${url}`);
+        return this.mergedSceneBuffer(await res.arrayBuffer());
+    }
+
+    public static mergedSceneBuffer(buffer: ArrayBuffer): MergedScene {
+        const bytes = new Uint8Array(buffer);
+
+        const marker = "end_header\n";
+        const probeLen = Math.min(bytes.length, 1 << 16);
+        const headerText = new TextDecoder("ascii").decode(bytes.subarray(0, probeLen));
+        const markerIdx = headerText.indexOf(marker);
+        if (markerIdx < 0) throw new Error("Invalid PLY: 'end_header' not found.");
+        const dataOffset = markerIdx + marker.length;
+
+        let format = "";
+        let vertexCount = 0;
+        const properties: PlyProperty[] = [];
+        let inVertexElement = false;
+        let offset = 0;
+        for (const rawLine of headerText.substring(0, markerIdx).split("\n")) {
+            const line = rawLine.trim();
+            if (line.startsWith("format ")) format = line.split(/\s+/)[1];
+            else if (line.startsWith("element ")) {
+                const parts = line.split(/\s+/);
+                inVertexElement = parts[1] === "vertex";
+                if (inVertexElement) vertexCount = parseInt(parts[2], 10);
+            } else if (line.startsWith("property ") && inVertexElement) {
+                const [, type, name] = line.split(/\s+/);
+                const size = PLY_TYPE_SIZES[type];
+                if (size === undefined) throw new Error(`Unsupported PLY property type: ${type}`);
+                properties.push({ name, type, size, offset });
+                offset += size;
+            }
+        }
+        if (format !== "binary_little_endian") {
+            throw new Error(`Unsupported PLY format '${format}'. Expected binary_little_endian.`);
+        }
+
+        const stride = offset;
+        const primProp = properties.find((p) => p.name === PRIM_TYPE_FIELD);
+        // Output keeps every property except prim_type (which a stock 3DGS parser can't read).
+        const outProps = primProp ? properties.filter((p) => p !== primProp) : properties;
+        const outStride = primProp ? stride - primProp.size : stride;
+
+        const xProp = properties.find((p) => p.name === "x")!;
+        const yProp = properties.find((p) => p.name === "y")!;
+        const zProp = properties.find((p) => p.name === "z")!;
+        const view = new DataView(buffer);
+
+        const body = new Uint8Array(vertexCount * outStride);
+        let cursor = 0;
+        let sx = 0, sy = 0, sz = 0, sxx = 0, syy = 0, szz = 0;
+        for (let i = 0; i < vertexCount; i++) {
+            const base = dataOffset + i * stride;
+            if (primProp) {
+                body.set(bytes.subarray(base, base + primProp.offset), cursor);
+                body.set(bytes.subarray(base + primProp.offset + primProp.size, base + stride),
+                    cursor + primProp.offset);
+            } else {
+                body.set(bytes.subarray(base, base + stride), cursor);
+            }
+            cursor += outStride;
+
+            const x = view.getFloat32(base + xProp.offset, true);
+            const y = view.getFloat32(base + yProp.offset, true);
+            const z = view.getFloat32(base + zProp.offset, true);
+            sx += x; sy += y; sz += z; sxx += x * x; syy += y * y; szz += z * z;
+        }
+
+        const n = Math.max(vertexCount, 1);
+        const mx = sx / n, my = sy / n, mz = sz / n;
+        const radius = 2.5 * Math.sqrt(
+            Math.max(sxx / n - mx * mx, 0) + Math.max(syy / n - my * my, 0) + Math.max(szz / n - mz * mz, 0)
+        ) || 1;
+
+        return { url: this.makePlyUrl(outProps, vertexCount, body), count: vertexCount, center: [mx, my, mz], radius };
     }
 
     /**

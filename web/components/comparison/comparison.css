@@ -13,7 +13,7 @@
 
 /* The container is toggled by the tab nav; the redesign manages its own layout. */
 .cmp-root {
-    max-width: 1480px;
+    max-width: 920px;
     margin: 0 auto;
     font-family: 'Outfit', sans-serif;
 }
@@ -73,19 +73,8 @@
 .flow-op { font-size: 9px; line-height: 1.2; opacity: 0.72; text-align: center; max-width: 88px; }
 .dim { opacity: 0.6; font-style: italic; }
 
-/* ---- 2-column layout (kept) -------------------------------------------- */
-.cmp-grid {
-    display: grid;
-    grid-template-columns: 1.15fr 1fr;
-    gap: 26px;
-    align-items: start;
-}
-.cmp-col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
-.cmp-col-right { position: sticky; top: 86px; }
-@media (max-width: 1100px) {
-    .cmp-grid { grid-template-columns: 1fr; }
-    .cmp-col-right { position: static; }
-}
+/* ---- Single-column layout ---------------------------------------------- */
+.cmp-stack { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
 
 /* ---- Card v2 ----------------------------------------------------------- */
 .ccard {

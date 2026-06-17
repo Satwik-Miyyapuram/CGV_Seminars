@@ -25,6 +25,16 @@ export class SideBySide3DViewer {
     // Track active viewport interaction to sync cameras from active to inactive
     private activeViewport: "3dgs" | "ges" | null = null;
 
+    // Radius of the opaque surfel disc in world units. The surfel plane is 1.5 wide and its
+    // fragment shader keeps the inscribed circle, so the disc radius is half the width.
+    private readonly DISC_RADIUS = 0.75;
+    // Reusable temporaries for the occlusion test (avoid per-frame allocation).
+    private _occG = new THREE.Vector3();
+    private _occS = new THREE.Vector3();
+    private _occN = new THREE.Vector3();
+    private _occDir = new THREE.Vector3();
+    private _occQ = new THREE.Quaternion();
+
     constructor() {
         this.init3DGS();
         this.initGES();
@@ -129,40 +139,23 @@ export class SideBySide3DViewer {
             }
         `;
 
-        // GES Gaussian fragment shader: outputs PREMULTIPLIED color for additive blending
-        const gesGaussFS = `
-            varying vec2 vUv;
-            uniform vec3 uColor;
-            uniform float uOpacity;
-            void main() {
-                float d2 = dot(vUv, vUv);
-                float g = exp(-18.0 * d2);
-                if (g < 0.005) discard;
-                float alpha = uOpacity * g;
-                gl_FragColor = vec4(uColor * alpha, alpha);
-            }
-        `;
-
         SPLATS.forEach(s => {
             const isSurfel = isGES && s.isSurfel;
+            // Gaussians render the same way on both sides (normal alpha blending, no depth
+            // write). The GES difference is purely the OPAQUE surfel: it writes depth first
+            // (renderOrder 1 below + depthWrite), so the hardware depth test culls Gaussian
+            // fragments that fall *behind the surfel disc* — and only those — per pixel.
             const mat = new THREE.ShaderMaterial({
                 vertexShader: isSurfel ? surfelVS : gaussVS,
-                fragmentShader: isSurfel ? surfelFS : (isGES ? gesGaussFS : gaussFS),
-                uniforms: { 
-                    uColor: { value: new THREE.Color(s.rgb[0], s.rgb[1], s.rgb[2]) }, 
-                    uOpacity: { value: s.opacity } 
+                fragmentShader: isSurfel ? surfelFS : gaussFS,
+                uniforms: {
+                    uColor: { value: new THREE.Color(s.rgb[0], s.rgb[1], s.rgb[2]) },
+                    uOpacity: { value: s.opacity }
                 },
                 transparent: true,
                 depthWrite: !!isSurfel,
                 depthTest: true,
                 side: THREE.DoubleSide,
-                ...(!isSurfel && isGES ? {
-                    blending: THREE.CustomBlending,
-                    blendSrc: THREE.OneFactor,
-                    blendDst: THREE.OneFactor,
-                    blendSrcAlpha: THREE.OneFactor,
-                    blendDstAlpha: THREE.OneFactor,
-                } : {})
             });
 
             const size = isSurfel ? 1.5 : 1.3;
@@ -231,6 +224,39 @@ export class SideBySide3DViewer {
     }
 
     /**
+     * Is the Gaussian's centre actually hidden behind the opaque surfel DISC (not merely
+     * deeper in view)? Casts the camera→Gaussian ray, intersects it with the surfel's disc
+     * plane, and reports occluded only when the hit is in front of the Gaussian and lands
+     * within the disc radius — so a Gaussian beside the disc is correctly *not* flagged.
+     */
+    private occludedBySurfel(gaussMesh: THREE.Mesh, surfelMesh: THREE.Mesh): boolean {
+        const cam = this.cameraGes.position;
+        const g = gaussMesh.getWorldPosition(this._occG);
+        const s = surfelMesh.getWorldPosition(this._occS);
+        const n = this._occN.set(0, 0, 1)
+            .applyQuaternion(surfelMesh.getWorldQuaternion(this._occQ))
+            .normalize();
+
+        const dir = this._occDir.copy(g).sub(cam);
+        const gaussDist = dir.length();
+        if (gaussDist < 1e-6) return false;
+        dir.divideScalar(gaussDist); // normalize
+
+        const denom = dir.dot(n);
+        if (Math.abs(denom) < 1e-6) return false; // ray parallel to the disc plane
+
+        // Distance along the ray to the disc plane.
+        const t = ((s.x - cam.x) * n.x + (s.y - cam.y) * n.y + (s.z - cam.z) * n.z) / denom;
+        if (t <= 0 || t >= gaussDist) return false; // disc is behind the camera or the Gaussian
+
+        // Hit point on the plane; occluded only if it lands inside the disc.
+        const hx = cam.x + dir.x * t - s.x;
+        const hy = cam.y + dir.y * t - s.y;
+        const hz = cam.z + dir.z * t - s.z;
+        return Math.sqrt(hx * hx + hy * hy + hz * hz) < this.DISC_RADIUS;
+    }
+
+    /**
      * Rendering loop.
      */
     private animate() {
@@ -265,23 +291,22 @@ export class SideBySide3DViewer {
             }
         }
 
-        // GES side: Render depth testing culling check (cull if d_i > d_s + delta).
-        // View-space depth matches the paper's use of depth (view z) for the depth test.
+        // GES side: the opaque surfel renders first (renderOrder + depthWrite), so the
+        // hardware depth test culls Gaussian fragments behind the disc per-pixel — we don't
+        // hide whole meshes. The readout flags each Gaussian as ✗ only when its centre is
+        // genuinely occluded by the disc (behind it AND within its silhouette), matching what
+        // you see; a Gaussian beside the disc stays ✅ even if it's deeper.
         if (this.meshesGes.length > 0) {
             const surfelMesh = this.meshesGes.find(m => m.splat.isSurfel)?.mesh;
             if (surfelMesh) {
                 const dS = this.viewDepth(this.cameraGes, surfelMesh);
-                const deltaEl = document.getElementById("compDeltaSlider") as HTMLInputElement;
-                const delta = deltaEl ? parseFloat(deltaEl.value) : 0.5;
-
                 const debugLines: string[] = [`Surfel: ${dS.toFixed(2)}`];
 
                 this.meshesGes.forEach(m => {
                     if (!m.splat.isSurfel) {
                         const dG = this.viewDepth(this.cameraGes, m.mesh);
-                        const cull = dG > dS + delta;
-                        m.mesh.visible = !cull;
-                        debugLines.push(`${m.splat.name}: ${dG.toFixed(2)} ${cull ? "❌" : "✅"}`);
+                        const occluded = this.occludedBySurfel(m.mesh, surfelMesh);
+                        debugLines.push(`${m.splat.name}: ${dG.toFixed(2)} ${occluded ? "❌" : "✅"}`);
                     }
                 });
 

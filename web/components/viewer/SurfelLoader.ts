@@ -81,7 +81,7 @@ export class SurfelLoader {
         material.alphaTest = 0.001; 
         material.transparent = true;
 
-        // Custom blending configuration for premultiplied alpha accumulation
+        // Custom blending configuration for standard 3DGS premultiplied alpha accumulation
         material.blending = THREE.CustomBlending;
         material.blendEquation = THREE.AddEquation;
         material.blendSrc = THREE.OneFactor; // Fragment shader outputs premultiplied color: color * opacity
@@ -123,12 +123,16 @@ export class SurfelLoader {
                 uniform float uDiscardThreshold;`
             );
             
-            // 4. Implement flat circular disc opacity for surfels (constant opacity inside 3.33-sigma boundary)
+            // 4. Implement the exact GES CUDA surfel opacity formula:
+            // alpha = min(0.99, 255 * sigmoid(raw_opacity) * exp(-0.5 * A))
             shader.fragmentShader = shader.fragmentShader.replace(
                 /float\s+opacity\s*=\s*exp\(\s*-0\.5\s*\*\s*A\s*\)\s*\*\s*vColor\.a\s*;/g,
                 `float g = exp(-0.5 * A);
                 if (g < 1.0 / 255.0) discard;
-                float opacity = vColor.a;
+                float val = 255.0 * vColor.a * g;
+                
+                
+                float opacity = min(0.99, val);
                 if (opacity < uDiscardThreshold) discard;`
             );
 

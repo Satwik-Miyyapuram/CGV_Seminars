@@ -181,11 +181,11 @@ export class TileBoundaryDiagram {
         ctx.textAlign = "left";
         ctx.fillText("① 3DGS — screen split into TILES", xL, this.A_titleY);
 
-        // Label Intermediate
+        // Stage label (right-aligned so it clears the row title)
         ctx.textAlign = "right";
         ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
         ctx.font = "8px monospace";
-        ctx.fillText("INTERMEDIATE: Tile Setup", xR, this.A_titleY);
+        ctx.fillText("INPUT: Tile Setup", xR, this.A_titleY);
         ctx.textAlign = "left";
 
         // Tile fills + outlines
@@ -250,13 +250,6 @@ export class TileBoundaryDiagram {
         ctx.fillText(`Tile 0 draws: A${memb0 ? " + B" : ""}`, xL, this.A_badgeY);
         ctx.fillText(`Tile 1 draws: A${memb1 ? " + B" : ""}`, boundary + 8, this.A_badgeY);
 
-        // Label Output
-        ctx.textAlign = "right";
-        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
-        ctx.font = "8px monospace";
-        ctx.fillText("OUTPUT: Rendered Pixels", xR, this.A_badgeY);
-        ctx.textAlign = "left";
-
         // Result bar: per pixel, blend the blobs that pixel's tile draws (front-to-back).
         this.renderBar(ctx, xL, xR, this.A_barY, (wx) => {
             const inLeft = wx < boundary;
@@ -271,6 +264,13 @@ export class TileBoundaryDiagram {
             }
             return [r, g, b];
         });
+
+        // Output stage label, overlaid on the result bar (own baseline → no clash with badges)
+        ctx.textAlign = "right";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.font = "8px monospace";
+        ctx.fillText("OUTPUT: Rendered Pixels", xR - 4, this.A_barY + 13);
+        ctx.textAlign = "left";
 
         // Seam marker
         if (s.seam) {
@@ -304,11 +304,11 @@ export class TileBoundaryDiagram {
         ctx.textAlign = "left";
         ctx.fillText("② GES — NO tiles, one smooth pass", xL, this.B_titleY);
 
-        // Label Intermediate
+        // Stage label (right-aligned so it clears the row title)
         ctx.textAlign = "right";
         ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
         ctx.font = "8px monospace";
-        ctx.fillText("INTERMEDIATE: Full Region Setup", xR, this.B_titleY);
+        ctx.fillText("INPUT: Full Region Setup", xR, this.B_titleY);
         ctx.textAlign = "left";
 
         // One continuous region (no divider)
@@ -329,13 +329,6 @@ export class TileBoundaryDiagram {
         ctx.fillStyle = "#cfd2dc";
         ctx.fillText("Everywhere draws: A + B   (additive: C = Σ cᵢ·αᵢ / Σ αᵢ)", xL, this.B_badgeY);
 
-        // Label Output
-        ctx.textAlign = "right";
-        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
-        ctx.font = "8px monospace";
-        ctx.fillText("OUTPUT: Rendered Pixels", xR, this.B_badgeY);
-        ctx.textAlign = "left";
-
         // Result bar: additive normalized blend of BOTH blobs at every pixel.
         this.renderBar(ctx, xL, xR, this.B_barY, (wx) => {
             let sumA = 0, cr = 0, cg = 0, cb = 0;
@@ -347,6 +340,13 @@ export class TileBoundaryDiagram {
             const agg = 1 - Math.exp(-sumA);
             return [cr / sumA * agg, cg / sumA * agg, cb / sumA * agg];
         });
+
+        // Output stage label, overlaid on the result bar
+        ctx.textAlign = "right";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.font = "8px monospace";
+        ctx.fillText("OUTPUT: Rendered Pixels", xR - 4, this.B_barY + 13);
+        ctx.textAlign = "left";
 
         ctx.fillStyle = "#00ff87";
         ctx.font = "bold 11px 'Space Grotesk'";
