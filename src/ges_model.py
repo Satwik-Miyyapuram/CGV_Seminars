@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-
 from gsplat.rendering import rasterization
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.cameras import Cameras
@@ -46,26 +45,20 @@ from training_schedule import (
     VISIBILITY_PRUNE_STEP,
 )
 
+
 @dataclass
 class GESModelConfig(SplatfactoModelConfig):
     """Configuration for the GES Model."""
 
     _target: type = field(default_factory=lambda: GESModel)
     output_depth_during_training: bool = True
-    use_dynamic_epsilon: bool = (
-        True
-    )
-    surfel_visibility_threshold_real: int = (
-        16
-    )
-    surfel_visibility_threshold_synthetic: int = (
-        4
-    )
+    use_dynamic_epsilon: bool = True
+    surfel_visibility_threshold_real: int = 16
+    surfel_visibility_threshold_synthetic: int = 4
     use_real_scene: bool = True
     max_num_surfels: int = -1
-    max_num_gaussians: int = (
-        -1
-    )
+    max_num_gaussians: int = -1
+
 
 class Surfel(torch.nn.Module):
     """Data structure for a surfel (2D)"""
@@ -108,6 +101,7 @@ class Surfel(torch.nn.Module):
         opacities = Parameter(torch.logit((0.1 / 255.0) * torch.ones((num_points, 1))))
         return cls(means, quats, scales, opacities, features_dc, features_rest)
 
+
 class Gaussian(torch.nn.Module):
     """Data structure for a gaussian (3D)"""
 
@@ -129,6 +123,7 @@ class Gaussian(torch.nn.Module):
         self.features_dc = features_dc
         self.features_rest = features_rest
 
+
 class GESModel(Model):
     """
     Gaussian-Surfel Model extending Nerfstudio's base Model.
@@ -145,9 +140,7 @@ class GESModel(Model):
         """Build the model; register buffers for gaussian-spawn seeds and per-primitive caches."""
         self.seed_points = seed_points
         super().__init__(*args, **kwargs)
-        self.register_buffer(
-            "saved_gaussian_seeds", torch.zeros((0, 3))
-        )
+        self.register_buffer("saved_gaussian_seeds", torch.zeros((0, 3)))
         self.register_buffer("saved_gaussian_features_dc", torch.zeros((0, 3)))
         self.register_buffer("saved_gaussian_features_rest", torch.zeros((0, 15, 3)))
         self.register_buffer("saved_gaussian_scales", torch.zeros((0, 3)))
@@ -240,9 +233,7 @@ class GESModel(Model):
 
         self.crop_box: OrientedBox | None = None
         if self.config.background_color == "random":
-            self.background_color = torch.tensor(
-                [0.1490, 0.1647, 0.2157]
-            )
+            self.background_color = torch.tensor([0.1490, 0.1647, 0.2157])
         else:
             self.background_color = get_color(self.config.background_color)
         self.strategy = GESStrategy(
@@ -250,7 +241,18 @@ class GESModel(Model):
             surfel_visibility_threshold_synthetic=self.config.surfel_visibility_threshold_synthetic,
             use_real_scene=self.config.use_real_scene,
         )
-        self.strategy_state = self.strategy.initialize_state()
+
+        if (
+            self.seed_points is not None
+            and not self.config.random_init
+            and self.surfel.means.shape[0] > 0
+        ):
+            pts = self.surfel.means.detach()
+            scene_scale = float((pts - pts.mean(dim=0)).norm(dim=1).max().clamp_min(1e-6))
+        else:
+            scene_scale = 1.0
+        print(f"[GES] strategy scene_scale = {scene_scale:.4f}")
+        self.strategy_state = self.strategy.initialize_state(scene_scale=scene_scale)
 
     def get_param_groups(self) -> dict[str, list[Parameter]]:
         """
@@ -581,9 +583,7 @@ class GESModel(Model):
                     self.eval()
                     with torch.no_grad():
                         bg = self.config.background_color
-                        self.config.background_color = (
-                            "white"
-                        )
+                        self.config.background_color = "white"
 
                         outputs = self.get_outputs(self.fixed_camera)
                         rgb = outputs["rgb"].detach().cpu().numpy()
@@ -842,9 +842,7 @@ class GESModel(Model):
             )
         else:
             surfel_color_crop = torch.sigmoid(surfel_color_crop).squeeze(1)
-            gaussian_color_crop = torch.sigmoid(gaussian_color_crop).squeeze(
-                1
-            )
+            gaussian_color_crop = torch.sigmoid(gaussian_color_crop).squeeze(1)
             sh_degree_to_use = None
         if self.step >= 500:
             with open("debug_strategy.txt", "a") as f:
@@ -942,9 +940,7 @@ class GESModel(Model):
             valid_mask = valid_mask & in_screen_mask
 
             culled_opacities = gaussian_crop.opacities.clone()
-            culled_opacities[
-                ~valid_mask
-            ] = -100.0
+            culled_opacities[~valid_mask] = -100.0
 
             opacities = torch.sigmoid(culled_opacities.squeeze(-1))
             gaussian_scales = gaussian_crop.scales
@@ -986,11 +982,15 @@ class GESModel(Model):
                     # visibility-prune phase thresholds pi * (rx * ry) against n_thr (GES paper's
                     # covering score n_i). surfel_radii_cache therefore holds an *area*, not a radius.
                     if radii_tensor.dim() == 3:  # (cameras, N, 2) per-axis radii
-                        surfel_radii = (radii_tensor[..., 0] * radii_tensor[..., 1]).max(dim=0).values
-                    elif radii_tensor.dim() == 2:  # (cameras, N): no per-axis split -> isotropic r^2
+                        surfel_radii = (
+                            (radii_tensor[..., 0] * radii_tensor[..., 1]).max(dim=0).values
+                        )
+                    elif (
+                        radii_tensor.dim() == 2
+                    ):  # (cameras, N): no per-axis split -> isotropic r^2
                         surfel_radii = (radii_tensor.max(dim=0).values) ** 2
                     else:  # (N,): isotropic r^2
-                        surfel_radii = radii_tensor ** 2
+                        surfel_radii = radii_tensor**2
 
                     state = self.strategy_state["surfels"]
                     if "surfel_radii_cache" not in state or state["surfel_radii_cache"] is None:
