@@ -471,9 +471,13 @@ class GESModel(Model):
                 print("Frozen surfel opacity from optimization.")
 
         def phase_15k_callback(step: int):
-            """At 15k: run the surfel visibility-pruning phase."""
-            if step == VISIBILITY_PRUNE_STEP:
-                print("Reached 15k iterations, Visibility Pruning phase...")
+            """From 15k up to (not incl.) 20k, every 1k: run the surfel covering-score prune.
+
+            Densification is already disabled by this point, matching the GES paper's post-15k
+            'tiny or invisible surfel' culling, which GES-main applies periodically in this window.
+            """
+            if VISIBILITY_PRUNE_STEP <= step < SURFEL_PHASE_END and step % 1000 == 0:
+                print(f"Iteration {step}: surfel covering-score prune...")
                 self.strategy.execute_visibility_prune_phase(self)
 
         def phase_18k_callback(step: int):
@@ -653,7 +657,7 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(VISIBILITY_PRUNE_STEP,),
+                iters=tuple(range(VISIBILITY_PRUNE_STEP, SURFEL_PHASE_END, 1000)),
                 func=phase_15k_callback,
             )
         )
@@ -974,15 +978,19 @@ class GESModel(Model):
             gaussian_info = None
         self.info = {"surfels": surfel_info, "gaussians": gaussian_info}
         if self.training:
-            if self.step <= VISIBILITY_PRUNE_STEP:
+            if self.step <= SURFEL_PHASE_END:
                 if surfel_info is not None:
                     radii_tensor = surfel_info["radii"].detach()
-                    if radii_tensor.dim() == 3:
-                        surfel_radii = radii_tensor.max(dim=0).values.max(dim=-1).values
-                    elif radii_tensor.dim() == 2:
-                        surfel_radii = radii_tensor.max(dim=0).values
-                    else:
-                        surfel_radii = radii_tensor
+                    # Covering-area proxy per surfel: the projected footprint area, taken as the
+                    # ellipse area rx * ry (per-axis screen radii), maxed over cameras. The
+                    # visibility-prune phase thresholds pi * (rx * ry) against n_thr (GES paper's
+                    # covering score n_i). surfel_radii_cache therefore holds an *area*, not a radius.
+                    if radii_tensor.dim() == 3:  # (cameras, N, 2) per-axis radii
+                        surfel_radii = (radii_tensor[..., 0] * radii_tensor[..., 1]).max(dim=0).values
+                    elif radii_tensor.dim() == 2:  # (cameras, N): no per-axis split -> isotropic r^2
+                        surfel_radii = (radii_tensor.max(dim=0).values) ** 2
+                    else:  # (N,): isotropic r^2
+                        surfel_radii = radii_tensor ** 2
 
                     state = self.strategy_state["surfels"]
                     if "surfel_radii_cache" not in state or state["surfel_radii_cache"] is None:

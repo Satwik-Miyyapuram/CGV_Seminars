@@ -4,7 +4,7 @@ Place iteration numbers and step lists here so other modules can import
 them instead of hard-coding the same literals in multiple places.
 """
 
-SURFEL_DENSIFICATION_STOP = 15000
+SURFEL_DENSIFICATION_STOP = 10000
 SURFEL_PHASE_END = 20000
 VISIBILITY_PRUNE_STEP = 15000
 CLAMP_18K_STEP = 18000

@@ -460,11 +460,12 @@ class GESStrategy(Strategy):
 
     def execute_visibility_prune_phase(self, model):
         """
-        Callback function to be executed at the 15k iteration to prune the points based on
-        visibility. Implements the dynamic culling algorithm from the GES paper:
-        - Compute pixel coverage for each surfel (approximated using 2D radius and opacity)
-        - Coverage is π * radius² * opacity
-        - Prune surfels with coverage < n_threshold
+        Surfel covering-score prune, run every 1k from 15k to 20k (densification already off).
+        Implements the GES paper's post-15k 'tiny or invisible surfel' culling:
+        - surfel_radii_cache holds the max-over-views ellipse area (rx * ry) per surfel.
+        - The covering score is approximated as π * (rx * ry), weighted by opacity.
+        - Surfels with score < n_threshold (n_thr) are pruned.
+        The accumulator is reset afterwards so the next window measures coverage afresh.
         """
         n_threshold = (
             self.surfel_visibility_threshold_real
@@ -472,16 +473,10 @@ class GESStrategy(Strategy):
             else self.surfel_visibility_threshold_synthetic
         )
 
-        max_2d_radius = model.surfel_radii_cache.detach()
+        # surfel_radii_cache is the per-surfel ellipse area rx * ry (max over views), 1D.
+        cover_area = model.surfel_radii_cache.detach()
 
-        if max_2d_radius.dim() == 3:
-            max_2d_radius = max_2d_radius.max(dim=0).values.max(dim=-1).values
-        elif max_2d_radius.dim() == 2:
-            max_2d_radius = max_2d_radius.max(dim=-1).values
-
-        opacities = torch.sigmoid(model.surfel.opacities.detach()).squeeze()
-
-        approx_cover = (3.14159 * max_2d_radius**2) * opacities
+        approx_cover = 3.14159 * cover_area
         visibility_mask = approx_cover > n_threshold
         num_pruned = torch.sum(~visibility_mask).item()
         print(
@@ -521,17 +516,20 @@ class GESStrategy(Strategy):
 
         self._clean_optimizer_states(model)
 
+        # Keep the covering-area accumulator as a global max over all views (paper's n_i =
+        # max_j{n_i,j}): just slice it to the surviving surfels, do not reset. Successive
+        # prunes therefore re-check an ever-growing max rather than a fresh 1k-step window.
+        state = model.strategy_state["surfels"]
         if (
             hasattr(model, "surfel_radii_cache")
             and model.surfel_radii_cache is not None
             and model.surfel_radii_cache.shape[0] > 0
         ):
             model.surfel_radii_cache = model.surfel_radii_cache[visibility_mask]
-        state = model.strategy_state["surfels"]
         if "surfel_radii_cache" in state and state["surfel_radii_cache"] is not None:
             state["surfel_radii_cache"] = state["surfel_radii_cache"][visibility_mask]
         for key in ["grad2d", "count", "radii"]:
-            if state[key] is not None:
+            if state.get(key) is not None:
                 state[key] = state[key][visibility_mask]
 
         print(
