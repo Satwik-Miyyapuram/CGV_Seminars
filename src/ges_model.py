@@ -34,10 +34,8 @@ from ges_strategy import GESStrategy
 from training_schedule import (
     CLAMP_18K_STEP,
     CLAMP_19K_STEP,
-    COMPOSITE_ASSEMBLY_STEP,
     FIXED_VIEW_STEPS,
     GAUSSIAN_SPAWN_STEP,
-    LOSS_GRAPH_STEP,
     MILESTONE_STEPS,
     SURFEL_DENSIFICATION_STOP,
     SURFEL_DISCARD_ITER,
@@ -384,6 +382,22 @@ class GESModel(Model):
         Register callbacks for the Discard Phase (Iter 10k) and Ramp Phase (Iter 18k-20k).
         """
         callbacks = []
+
+        # Resolve the actual final training step (trainer runs steps 0..max_num_iterations-1),
+        # so the end-of-run loss graph and progression composite fire at the true last
+        # iteration for any --max-num-iterations, not a hard-coded 50k-schedule constant.
+        max_iters = 30000
+        trainer = getattr(training_callback_attributes, "trainer", None)
+        if trainer is not None and getattr(trainer, "config", None) is not None:
+            max_iters = getattr(trainer.config, "max_num_iterations", max_iters)
+        final_step = max_iters - 1
+        # Progression sampling (dynamic): the detailed phase-transition steps up to 30k, then
+        # every 2k after 30k, always including the final step. Clamped to the actual run length.
+        progress_steps = {s for s in FIXED_VIEW_STEPS if s <= 30000}
+        progress_steps |= set(range(32000, final_step + 1, 2000))
+        progress_steps.add(final_step)
+        fixed_view_steps = sorted(s for s in progress_steps if 0 <= s <= final_step)
+
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
@@ -530,7 +544,7 @@ class GESModel(Model):
 
         def save_loss_graph_callback(step: int):
             """At the final iteration: plot and save the EMA-smoothed training loss curve."""
-            if step == LOSS_GRAPH_STEP and len(self.l1_loss_history) > 0:
+            if step == final_step and len(self.l1_loss_history) > 0:
                 try:
                     import os
 
@@ -576,7 +590,7 @@ class GESModel(Model):
 
         def save_fixed_view_callback(step: int):
             """At configured iterations: render the fixed camera to a labelled progress image (and a composite at the end)."""
-            target_steps = FIXED_VIEW_STEPS
+            target_steps = fixed_view_steps
             if step in target_steps and hasattr(self, "fixed_camera"):
                 try:
                     was_training = self.training
@@ -608,7 +622,7 @@ class GESModel(Model):
                     if was_training:
                         self.train()
 
-                    if step == COMPOSITE_ASSEMBLY_STEP:
+                    if step == final_step:
                         images = []
                         for s in target_steps:
                             path = f"web_assets/progress/step_{s}.png"
@@ -692,14 +706,14 @@ class GESModel(Model):
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=(LOSS_GRAPH_STEP,),
+                iters=(final_step,),
                 func=save_loss_graph_callback,
             )
         )
         callbacks.append(
             TrainingCallback(
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                iters=tuple(FIXED_VIEW_STEPS),
+                iters=tuple(fixed_view_steps),
                 func=save_fixed_view_callback,
             )
         )

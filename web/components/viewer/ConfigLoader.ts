@@ -41,7 +41,7 @@ export class ConfigLoader {
         let loadedCombined = false;
         try {
             console.log("[ConfigLoader] Checking for default truck_1 scene.ply...");
-            const res = await fetch('/web_assets/truck_1/scene.ply');
+            const res = await fetch('/web_assets/scene.ply');
             const contentType = res.headers.get('content-type') || '';
             if (res.ok && !contentType.includes('text/html')) {
                 const buffer = await res.arrayBuffer();

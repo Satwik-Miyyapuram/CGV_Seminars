@@ -196,7 +196,10 @@ PyTorch + torchvision (autograd/CUDA backend), **pytorch-msssim** (SSIM term in 
 
 ### Data
 
-We used the garden dataset from mipnerf
+The datasets used in this project can be accessed at the following links:
+* **Lounge:** [Google Drive Folder](https://drive.google.com/drive/folders/17NIX-caohju88_jiy14DKbviBHZGXLPf?usp=drive_link)
+* **Truck (T&T):** [Hugging Face Dataset (tandt/truck)](https://huggingface.co/datasets/alexmkwizu/gaussian_training_datasets/tree/main/tandt/truck)
+* **Garden (Mip-NeRF 360):** [Hugging Face Dataset (3DGS_datasets)](https://huggingface.co/datasets/ZaY19/3DGS_datasets/tree/main)
 
 ---
 

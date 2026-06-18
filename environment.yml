@@ -1,16 +1,22 @@
 name: ges
 channels:
-  - defaults
-  - conda-forge
+  - pytorch
   - nvidia
+  - conda-forge
+  - defaults
 dependencies:
-  - python 3.10
+  - python=3.10
   - pip
   - pytorch
   - torchvision
-  - pytorch-cuda=12.5
+  - pytorch-cuda=12.1  # Highly stable; can change to 12.4 depending on your GPU drivers
   - ninja
+  - scipy
+  - tqdm
   - pip:
       - pytorch-msssim
       - torchmetrics[image]
       - scikit-learn
+      - plyfile
+      - zstandard
+      - huggingface_hub
