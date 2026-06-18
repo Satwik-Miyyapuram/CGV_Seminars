@@ -38,7 +38,7 @@ class GESStrategy(Strategy):
     grow_grad2d: float = 0.0002
     grow_scale3d: float = 0.01
     grow_scale2d: float = 0.05
-    prune_scale3d: float = 0.5
+    prune_scale3d: float = 0.1
     prune_scale2d: float = 0.15
     refine_start_iter: int = 500
     refine_stop_iter: int = VISIBILITY_PRUNE_STEP
@@ -53,7 +53,7 @@ class GESStrategy(Strategy):
     surfel_prune_iter: int = VISIBILITY_PRUNE_STEP
     gaussian_spawn_iter: int = GAUSSIAN_SPAWN_STEP
 
-    surfel_visibility_threshold_real: float = 24.0
+    surfel_visibility_threshold_real: float = 16.0
     surfel_visibility_threshold_synthetic: float = 4.0
     use_real_scene: bool = True
 
@@ -961,8 +961,8 @@ class GESStrategy(Strategy):
                     cx, cy = intrinsic_mat[0, 0, 2], intrinsic_mat[0, 1, 2]
 
                     x_cam = (u_v - cx) * z_v / fx
-                    y_cam = (v_v - cy) * z_v / fy
-                    pos_cam = torch.stack([x_cam, y_cam, z_v], dim=-1)
+                    y_cam = -(v_v - cy) * z_v / fy
+                    pos_cam = torch.stack([x_cam, y_cam, -z_v], dim=-1)
 
                     c2w = outputs["camera_to_world"]
                     R = c2w[0, :3, :3]
