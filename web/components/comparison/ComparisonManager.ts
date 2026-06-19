@@ -3,6 +3,7 @@ import { TileBoundaryDiagram } from "./diagrams/TileBoundaryDiagram";
 import { ColorLeakingDiagram } from "./diagrams/ColorLeakingDiagram";
 import { Reflection3DViewer } from "./viewers/Reflection3DViewer";
 import { SideBySide3DViewer } from "./viewers/SideBySide3DViewer";
+import { VideoWipeViewer } from "./viewers/VideoWipeViewer";
 
 /**
  * ComparisonManager coordinates the initialization and resize handling of all
@@ -14,30 +15,24 @@ export class ComparisonManager {
     private leakDiagram!: ColorLeakingDiagram;
     private reflectionViewer!: Reflection3DViewer;
     private sideBySideViewer!: SideBySide3DViewer;
+    private wipeViewer!: VideoWipeViewer;
 
-    /** Construct the manager; immediately builds all diagrams and 3D viewers. */
     constructor() {
         this.init();
     }
 
-    /**
-     * Instantiate all diagrams and 3D viewers.
-     */
     private init() {
-        console.log("[ComparisonManager] Initializing comparison tab diagrams and viewers...");
         this.rayDiagram = new RayCompositingDiagram();
         this.tileDiagram = new TileBoundaryDiagram();
         this.leakDiagram = new ColorLeakingDiagram();
         this.reflectionViewer = new Reflection3DViewer();
         this.sideBySideViewer = new SideBySide3DViewer();
+        this.wipeViewer = new VideoWipeViewer();
 
-        // Listen for standard resize event to trigger redraws
         window.addEventListener("resize", this.handleResize);
 
-        // The comparison tab starts hidden (display:none), so the canvases are first sized
-        // while their container has zero size. Watch the container so that when the tab is
-        // shown (or otherwise resized) every diagram re-measures and redraws at the correct
-        // size — otherwise the 2D diagrams would stay blank until a window resize.
+        // The tab starts hidden (zero size), so canvases are first sized at zero width. Redraw
+        // every diagram once the container gains a real size, else the 2D ones stay blank.
         const container = document.getElementById("comparison-container");
         if (container && "ResizeObserver" in window) {
             const ro = new ResizeObserver(() => {
@@ -47,12 +42,8 @@ export class ComparisonManager {
         }
     }
 
-    /**
-     * Propagate resize events to each sub-component so they redraw correctly.
-     */
     public handleResize = () => {
-        // Skip while the comparison tab is hidden (zero size): some diagrams compute negative
-        // canvas dimensions at zero width and would throw.
+        // Skip while hidden: some diagrams compute negative dimensions at zero width and throw.
         const container = document.getElementById("comparison-container");
         if (container && container.clientWidth === 0) return;
 
@@ -67,5 +58,6 @@ export class ComparisonManager {
 
         this.reflectionViewer.handleResize();
         this.sideBySideViewer.handleResize();
+        this.wipeViewer.handleResize();
     };
 }

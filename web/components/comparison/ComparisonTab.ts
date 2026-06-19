@@ -44,7 +44,7 @@ export class ComparisonTab {
         }
     }
 
-    /** Wire the (unchanged) diagram + 3D viewer logic against the new markup. */
+    /** Build the diagrams and 3D viewers against the injected markup. */
     private init() {
         this.manager = new ComparisonManager();
     }
@@ -253,16 +253,16 @@ export class ComparisonTab {
             {
                 num: "4",
                 title: "Honest limitation: specular reflections",
-                take: `3DGS can fake a mirror reflection by hiding transparent "floaters" <b>under</b> the surface — you see through to them. GES's <b style="color:var(--cmp-surfel)">opaque surfel</b> blocks anything underground, so reflections must be faked differently and are harder to capture.`,
+                take: `Both methods light the scene with a <b style="color:var(--cmp-gauss)">3D Gaussian</b> light source. 3DGS represents the mirror as a <b style="color:var(--cmp-gauss)">flat translucent Gaussian</b> and fakes the reflection with a second Gaussian placed <b>underground</b> — the mirror image of the light, seen through the translucent surface. GES's mirror is an <b style="color:var(--cmp-surfel)">opaque surfel</b> (a flat, opaque Gaussian), which blocks any underground floater. So GES must fake the reflection with a <b>view-dependent Gaussian highlight</b> sitting directly on top of the surfel.`,
                 flow: [
-                    [{ kind: "in", label: "input", value: "drag to orbit" }],
+                    [{ kind: "in", label: "input", value: "camera position" }],
                     [
-                        { kind: "out", label: "output", value: "3DGS (sees floaters)" },
-                        { kind: "out", label: "output", value: "GES (blocked)" },
+                        { kind: "out", label: "output", value: "3DGS (underground floater)" },
+                        { kind: "out", label: "output", value: "GES (view-dependent highlight)" },
                     ],
                 ],
-                body: this.reflectionContainer(),
-                caption: `Orbit below the floor: 3DGS (left) lets the camera see the underground orange floater through the semi-transparent floor; GES (right) blocks it, so the same trick can't be used.`,
+                body: this.reflectionContainer() + this.reflectionWipe(),
+                caption: `Orbit the scene. 3DGS (left) renders the reflection as a static underground Gaussian — the true mirror image of the light — visible through the translucent mirror, so it stays view-stable. GES (right) can't do that: the opaque surfel blocks the floater, so the reflection is a Gaussian on top of the surface whose opacity and colour shift with the camera (Fresnel: stronger and warmer at grazing angles). Below: the truck rendered along one smooth camera path — drag the divider to wipe between <b>3DGS</b> (left) and <b>GES</b> (right), and watch how each handles the view-dependent specular highlight on the windshield as the camera orbits.`,
             },
         ];
     }
@@ -290,6 +290,18 @@ export class ComparisonTab {
             <div id="reflection-container" style="position:relative; border-radius:8px; overflow:hidden; border:1px solid rgba(255,255,255,0.05); background:#0d0c14;">
                 <div style="position:absolute; left:10px; top:10px; color:var(--cmp-3dgs); font-size:11px; font-weight:bold; background:rgba(0,0,0,0.5); padding:4px 6px; border-radius:4px; z-index:10;">3DGS — alpha blend</div>
                 <div style="position:absolute; right:10px; top:10px; color:var(--cmp-ges); font-size:11px; font-weight:bold; background:rgba(0,0,0,0.5); padding:4px 6px; border-radius:4px; z-index:10;">GES — opaque surfel</div>
+            </div>`;
+    }
+
+    /** 3DGS-vs-GES video wipe (VideoWipeViewer attaches to #wipe-container). */
+    private reflectionWipe(): string {
+        return `
+            <div id="wipe-container" style="margin-top:14px;">
+                <video id="wipe-3dgs" src="/truck_3dgs.mp4" muted loop playsinline></video>
+                <div class="wipe-clip"><video id="wipe-ges" src="/truck_ges.mp4" muted loop playsinline></video></div>
+                <div class="wipe-handle"></div>
+                <span class="wipe-label l3dgs">3DGS</span>
+                <span class="wipe-label lges">GES</span>
             </div>`;
     }
 }

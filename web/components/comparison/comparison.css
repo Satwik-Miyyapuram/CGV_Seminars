@@ -148,3 +148,39 @@ details.math[open] > summary::before { content: '▾  '; }
 #tile-canvas { height: 380px; }
 #leaking-canvas { height: 190px; }
 #reflection-container { height: 240px; }
+
+/* Refnerf-style 3DGS-vs-GES video wipe */
+#wipe-container {
+    position: relative; width: 100%; aspect-ratio: 16 / 10;
+    border-radius: 8px; overflow: hidden; cursor: ew-resize;
+    border: 1px solid rgba(255, 255, 255, 0.05); background: #0d0c14;
+    touch-action: none; user-select: none;
+}
+#wipe-container video {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; object-fit: cover; display: block;
+}
+/* GES sits above 3DGS, full-width, revealed by masking everything left of the divider. */
+.wipe-clip {
+    position: absolute; top: 0; left: 0; height: 100%; width: 100%;
+    clip-path: inset(0 0 0 50%);
+}
+.wipe-handle {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    height: 100%; width: 2px; background: rgba(255, 255, 255, 0.9);
+    pointer-events: none; z-index: 5;
+}
+.wipe-handle::after {
+    content: "\2194"; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 30px; height: 30px; border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+}
+.wipe-label {
+    position: absolute; bottom: 10px; z-index: 6;
+    font-size: 12px; font-weight: bold; color: #fff;
+    background: rgba(0, 0, 0, 0.6); padding: 4px 10px; border-radius: 6px;
+}
+.wipe-label.l3dgs { left: 10px; }
+.wipe-label.lges { right: 10px; }
